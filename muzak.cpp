@@ -1,5 +1,6 @@
 #define OLC_PGE3_APPLICATION
 #include "olcPixelGameEngine3.h"
+#include "miniaudio.h"
 
 #if defined(__PGETINKER__)
 #include "pgetinker.h"
@@ -12,6 +13,9 @@ static inline void pgetinker_file_resolve(const char* url, const char* mountPath
 	// Relative deformation
 	// Add NESW pole controls
 // Audio
+	// Vector with 'synths': id == a planet id / the sun
+		// Each synth has two waveforms, a drone and a arp; and a master delay
+	// Master LPF
 // Game progression
 // Menus
 // Details
@@ -20,20 +24,20 @@ static inline void pgetinker_file_resolve(const char* url, const char* mountPath
 	// Starfield background
 	// Dev mode
 
-const olc::vf2d SCREENSIZE = { 500.f,500.f };
-const float SCREEN_DIAGONAL_SQUARED = powf(SCREENSIZE.x, 2.f) + powf(SCREENSIZE.y, 2.f);
-float MU = 12000.f;
-const float TWO_PI = 2.f * 3.14159f;
-const olc::vf2d CENTER = { SCREENSIZE.x / 2.f, SCREENSIZE.y / 2.f };
-const float TAIL_WIDTH = 0.5f;
-const int TAIL_LENGTH = 250;
+const olc::vf2d 	SCREENSIZE = { 500.f,500.f };
+const float 		SCREEN_DIAGONAL_SQUARED = powf(SCREENSIZE.x, 2.f) + powf(SCREENSIZE.y, 2.f);
+float 				MU = 12000.f;
+const float 		TWO_PI = 2.f * 3.14159f;
+const olc::vf2d 	CENTER = { SCREENSIZE.x / 2.f, SCREENSIZE.y / 2.f };
+const float 		TAIL_WIDTH = 0.5f;
+const int 			TAIL_LENGTH = 250;
 
 enum starState {
-    t_tauri, // 100 million : lasts 1 minutes
-	mature, // 10 billion : lasts 6 minutes
-	redgiant, // 1 billion : lasts 2 minutes
-	nebula, // 100 million : lasts 30 seconds
-	whitedwarf
+    T_TAURI, // 100 million : lasts 1 minutes
+	MATURE, // 10 billion : lasts 6 minutes
+	REDGIANT, // 1 billion : lasts 2 minutes
+	NEBULA, // 100 million : lasts 30 seconds
+	WHITEDWARF
 };
 
 struct Particle
@@ -90,7 +94,7 @@ public:
 
 struct Star : public Body {
 public:
-    starState starState = t_tauri;
+    starState starState = T_TAURI;
 	Star() {
 		radius = 20.f;
 		position = { 0.f, 0.f };
@@ -191,6 +195,69 @@ public:
             path.pop_back();
 	}
 };
+
+enum SoundComponentTarget {
+	DRONE, ARP
+};
+
+struct PlanetSoundComponent {
+	int id;
+
+	miniaudio::ma_waveform 			drone;			// Sine
+    miniAudio::ma_waveform_config 	droneConfig;
+	miniAudio::ma_delay_node    	droneDelay;
+
+	miniaudio::ma_waveform 			arp;			// Square
+    miniAudio::ma_waveform_config 	arpConfig;
+	miniAudio::ma_delay_node    	arpDelay;
+
+	PlanetSoundComponent() {
+		// Initialize everything
+	}
+};
+
+struct MainSoundComponent {
+	miniaudio::ma_node_graph    		g_nodeGraph;
+	miniaudio::ma_lpf_node      		g_lpfNode;
+	std::vector<PlanetSoundComponent> 	synths;
+	
+	MainSoundComponent() {
+		for (auto i = 0; i < 10; i++) {
+			// synths.append(PlanetSoundComponent());
+		}
+
+		// Setup node graph
+        ma_node_graph_config nodeGraphConfig = ma_node_graph_config_init(CHANNELS);
+
+        result = ma_node_graph_init(&nodeGraphConfig, NULL, &g_nodeGraph);
+        if (result != MA_SUCCESS) {
+            printf("ERROR: Failed to initialize node graph.");
+            return -1;
+        }
+
+		// Set up LPF
+        ma_lpf_node_config lpfNodeConfig = ma_lpf_node_config_init(CHANNELS, SAMPLE_RATE, SAMPLE_RATE / LPF_CUTOFF_FACTOR, LPF_ORDER);
+
+        result = ma_lpf_node_init(&g_nodeGraph, &lpfNodeConfig, NULL, &g_lpfNode);
+        if (result != MA_SUCCESS) {
+            printf("ERROR: Failed to initialize low pass filter node.");
+            return -1;
+        }
+
+        /* Connect the output bus of the low pass filter node to the input bus of the endpoint. */
+        ma_node_attach_output_bus(&g_lpfNode, 0, ma_node_graph_get_endpoint(&g_nodeGraph), 0);
+
+        /* Set the volume of the low pass filter to make it more of less impactful. */
+        ma_node_set_output_bus_volume(&g_lpfNode, 0, LPF_BIAS);
+	}
+
+	void updateFrequency() {}
+	void updateAmplitude() {}
+	void play() {}
+	void stop() {}
+	void updateDelay() {}
+	void updateFeedback() {}
+}
 
 class MuzakOfTheSpheres : public olc::PixelGameEngine
 {
