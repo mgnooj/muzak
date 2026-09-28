@@ -10,24 +10,24 @@ static inline void pgetinker_file_resolve(const char* url, const char* mountPath
 #endif
 
 // TODO
-// Planet interactions: try
-	// Relative deformation
-	// Add NESW pole controls
 // Game progression
 // Menus
 // Details
 	// Shaders + effects
 	// Starfield background
-	// Dev / Creative mode
+	// Fix note system
+	// Planet interactions: try
+		// Relative deformation
+		// Add NESW pole controls
 
 #define FORMAT              ma_format_f32
 #define CHANNELS            2
 #define SAMPLE_RATE         48000
-#define LPF_BIAS            0.9f    /* Higher values means more bias towards the low pass filter (the low pass filter will be more audible). Lower values means more bias towards the echo. Must be between 0 and 1. */
-#define LPF_CUTOFF_FACTOR   80      /* High values = more filter. */
+#define LPF_BIAS            0.9f
+#define LPF_CUTOFF_FACTOR   80
 #define LPF_ORDER           8
 #define DELAY_IN_SECONDS    0.2f
-#define DECAY               0.5f    /* Volume falloff for each echo. */
+#define DECAY               0.5f
 
 const olc::vf2d 	SCREENSIZE = { 500.f,500.f };
 const float 		SCREEN_DIAGONAL_SQUARED = powf(SCREENSIZE.x, 2.f) + powf(SCREENSIZE.y, 2.f);
@@ -124,6 +124,7 @@ public:
 	float orbitEccentricity;	// semi-minor (y) axis length
 	std::vector<olc::vf2d> orbitOutline;
 	bool isHighlighted = false;
+	bool isActivated = false;
 
 	Planet(float rad, float startPhase, int newId, float sp, float orbRad, float orbEcc) {
 		radius = rad;
@@ -210,6 +211,8 @@ struct PlanetSoundComponent {
 
 	ma_waveform 			drone;			// Sine
 	ma_waveform 			arp;			// Square
+    ma_data_source_node  	droneNode;
+    ma_data_source_node  	arpNode;
 	ma_delay_node    		delay;
 
 	PlanetSoundComponent(int newId) {
@@ -222,7 +225,7 @@ struct MainSoundComponent {
 	inline static ma_lpf_node      										lowPass;
     inline static ma_device 											device;
 	inline static std::vector<std::unique_ptr<PlanetSoundComponent>> 	synths;
-	inline static std::vector<int> toPlay = {};
+	inline static std::vector<int> arpsToPlay = {};
 	
 	MainSoundComponent() {
 		// Set up node graph
@@ -238,6 +241,7 @@ struct MainSoundComponent {
 			printf("Failed to initialize LPF.\n");
 		}
         ma_node_attach_output_bus(&lowPass, 0, ma_node_graph_get_endpoint(&nodeGraph), 0);
+        ma_node_set_output_bus_volume(&lowPass, 0, LPF_BIAS);
 
 		// Set up each instrument
 		for (auto i = 0; i < 10; i++) {
@@ -250,17 +254,17 @@ struct MainSoundComponent {
 			ma_node_attach_output_bus(&synth->delay, 0, &lowPass, 0);
 
 			// Synths
-			ma_waveform_config droneConfig;
-			droneConfig = ma_waveform_config_init(FORMAT, CHANNELS, SAMPLE_RATE, ma_waveform_type_sine, 0.2, 440);
-			if (ma_waveform_init(&droneConfig, &synth->drone) && !MA_SUCCESS) {
-				printf("Failed to initialize Synth.\n");
-			}
-			ma_node_attach_output_bus(&synth->drone, 0, &lowPass, 0);
+			ma_waveform_config droneConfig = ma_waveform_config_init(FORMAT, CHANNELS, SAMPLE_RATE, ma_waveform_type_sine, 0.0, 220);
+			ma_waveform_init(&droneConfig, &synth->drone);
+			ma_data_source_node_config droneNodeConfig = ma_data_source_node_config_init(&synth->drone);
+			ma_data_source_node_init(&nodeGraph, &droneNodeConfig, NULL, &synth->droneNode);
+			ma_node_attach_output_bus(&synth->droneNode, 0, &synth->delay, 0);
 
-			ma_waveform_config arpConfig;
-			arpConfig = ma_waveform_config_init(FORMAT, CHANNELS, SAMPLE_RATE, ma_waveform_type_square, 0.2, 440);
+			ma_waveform_config arpConfig = ma_waveform_config_init(ma_format_f32, CHANNELS, SAMPLE_RATE, ma_waveform_type_triangle, 0.0, 440);
 			ma_waveform_init(&arpConfig, &synth->arp);
-			ma_node_attach_output_bus(&synth->arp, 0, &synth->delay, 0);
+			ma_data_source_node_config arpNodeConfig = ma_data_source_node_config_init(&synth->arp);
+			ma_data_source_node_init(&nodeGraph, &arpNodeConfig, NULL, &synth->arpNode);
+			ma_node_attach_output_bus(&synth->arpNode, 0, &synth->delay, 0);
 		}
 
         ma_device_config deviceConfig;
@@ -269,13 +273,11 @@ struct MainSoundComponent {
         deviceConfig.playback.channels = CHANNELS;
         deviceConfig.sampleRate        = SAMPLE_RATE;
         deviceConfig.dataCallback      = data_callback;
-        deviceConfig.pUserData         = NULL;
+        deviceConfig.pUserData         = &nodeGraph;
 
 		if (ma_device_init(NULL, &deviceConfig, &device) != MA_SUCCESS) {
 			printf("Failed to open playback device.\n");
 		}
-
-		printf("Device Name: %s\n", device.playback.name);
 
 		if (ma_device_start(&device) != MA_SUCCESS) {
 			printf("Failed to start playback device.\n");
@@ -289,19 +291,47 @@ struct MainSoundComponent {
 
 	static void data_callback(ma_device* pDevice, void* pOutput, const void* pInput, ma_uint32 frameCount)
 	{
-		for (auto synthIdx : toPlay) {
-			auto synth = synths[0].get();
-			ma_waveform_read_pcm_frames(&synth->drone, pOutput, frameCount, NULL);
+		ma_node_graph_read_pcm_frames(&nodeGraph, pOutput, frameCount, NULL);
+		for (auto synthIndex : arpsToPlay) {
+			auto synth = synths[synthIndex].get();
+			ma_waveform_set_amplitude(&synth->arp, 0.0);
 		}
-		toPlay.clear();
+		arpsToPlay.clear();
+		(void)pInput;   /* Unused. */
+		(void)pDevice;  /* Unused. */
 	}
 
-	void updateFrequency() {}
-	void updateAmplitude() {}
-	void play(int synthIndex) { toPlay.push_back(synthIndex); }
-	void stop() {}
-	void updateDelay() {}
-	void updateFeedback() {}
+	// A=440 Hz, B=493.88 Hz, C#=554.37 Hz, D=587.33 Hz, E=659.25 Hz, F#=739.99 Hz, and G#=830.61
+	const std::vector<double> notes = { 440.0, 493.88, 554.37, 587.33, 659.25, 739.99, 830.61, 880.0 };
+
+	void updateFrequency(int synthIndex, float input) {
+		auto noteIdx = (int)(input * (notes.size() - 1));
+		auto frequency = notes[noteIdx];
+		auto synth = synths[synthIndex].get();
+		ma_waveform_set_frequency(&synth->drone, frequency / 2.0);
+		ma_waveform_set_frequency(&synth->arp, frequency);
+	}
+	void updateAmplitude(int synthIndex, float amplitude) {
+		auto synth = synths[synthIndex].get();
+		ma_waveform_set_amplitude(&synth->drone, (double)amplitude);
+		ma_waveform_set_amplitude(&synth->arp, (double)amplitude);
+	}
+	void play(int synthIndex, SoundComponentTarget sound) { 
+		auto synth = synths[synthIndex].get();
+		if (sound == DRONE) {
+			ma_waveform_set_amplitude(&synth->drone, 0.1);
+		} else {
+			arpsToPlay.push_back(synthIndex);
+			ma_waveform_set_amplitude(&synth->arp, 0.2);
+		}
+	}
+	void stop(int synthIndex) {
+		auto synth = synths[synthIndex].get();
+		ma_waveform_set_amplitude(&synth->drone, 0.0);
+	}
+	void updateDelay(int synthIndex, double value) {}
+	void updateFeedback(int synthIndex, double value) {}
+	void updateCutoff(double value) {}
 };
 
 class MuzakOfTheSpheres : public olc::PixelGameEngine
@@ -317,10 +347,10 @@ public:
 	bool mouseHeld = false;
 
 	bool highlightingPlanet = false;
-	Planet* highlightedPlanet;
+	Planet* highlightedPlanet = NULL;
 
 	bool modifyingPlanet = false;
-	Planet* modifiedPlanet;
+	Planet* modifiedPlanet = NULL;
 	olc::vf2d clickOffset;
 
 	MainSoundComponent soundEngine = MainSoundComponent();
@@ -343,7 +373,6 @@ public:
 		totalElapsedTime += fElapsedTime;
 
 		if (fmod(totalElapsedTime, 10.f) == 0.f) {	// DEBUG
-            std::cout << "Emitted flare" << std::endl;
 			flares.push_back(std::make_unique<SolarFlare>(20.f, 0, 10.f, 10.f, olc::Colour::RED));
 		}
 		drawState(fElapsedTime);
@@ -369,9 +398,15 @@ public:
 			auto flare = flares[idx].get();
             for (auto idx2 = 0; idx2 < planets.size(); idx2++) {
                 auto body = planets[idx2].get();
-                if (isInSolarFlare(flare, body)) {
-                    handleSolarActivation(body);
-                }
+				auto currentlyActivated = body->isActivated;
+				auto inSolarFlare = isInSolarFlare(flare, body);
+                if (inSolarFlare && !currentlyActivated) {
+					body->isActivated = true;
+					soundEngine.play(body->id, DRONE);
+                } else if (!inSolarFlare && currentlyActivated) {
+					body->isActivated = false;
+					soundEngine.stop(body->id);
+				}
             }
 		}
 	}
@@ -384,30 +419,38 @@ public:
 	}
 
 	void handleUserInput() {
-
         bool mouseDown = mouse.GetButton(0).bHeld;
 		bool newClick = mouseDown && !mouseHeld;
 		mouseHeld = mouseDown;
 		olc::vf2d mousePosition = mouse.GetPosition().round();
 		olc::vf2d adjustedMousePosition = { mousePosition.x - SCREENSIZE.x / 2.f, mousePosition.y - SCREENSIZE.y / 2.f };
 
+		// User clicked on planet. Update planet to draw ellipse + play drone to preview sound.
 		if (newClick && highlightingPlanet) {
 			highlightingPlanet = false;
 			modifyingPlanet = true;
 			modifiedPlanet = highlightedPlanet;
+			soundEngine.play(modifiedPlanet->id, DRONE);
 			return;
 		} 
 
+		// User is modifying a planet. Update its frequency.
 		if (mouseDown && modifyingPlanet) {
 			modifiedPlanet->modifyOrbit(adjustedMousePosition, clickOffset);
+			auto frequencyInput = (modifiedPlanet->orbitRadius * modifiedPlanet->orbitEccentricity) / (SCREENSIZE.x * SCREENSIZE.y / 4.f);
+			soundEngine.updateFrequency(modifiedPlanet->id, frequencyInput);
 			return;
 		}
 
-		if (!mouseDown) {
+		// User stopped modifying a planet. Update planet to stop drawing ellipse + stop drone.
+		if (!mouseDown && modifyingPlanet) {
 			modifyingPlanet = false;
+			soundEngine.stop(modifiedPlanet->id);
 		}
 
+		// User was highlighting a planet.
 		if (highlightingPlanet) {
+			// Make sure they still are + update state.
 			for (auto& orbitPoint : highlightedPlanet->orbitOutline) {
 				auto dist = distance(orbitPoint, adjustedMousePosition);
 				if (dist < 20.f) {
@@ -415,8 +458,10 @@ public:
 					return;
 				}
 			}
+			// Else, update planet to stop drawing ellipse.
 			highlightingPlanet = false;
 			highlightedPlanet->isHighlighted = false;
+		// User wasn't doing anything; check if a planet should be highlighted.
 		} else {
 			for (auto& planetPtr : planets) {
 				auto planet = planetPtr.get();
@@ -432,44 +477,7 @@ public:
 				}
 			}
 		}
-
-		/*
-        bool mouseClicked = mouse.GetButton(0).bHeld;
-
-		if (mouseClicked) {
-			olc::vf2d click = mouse.GetPosition().round();
-			olc::vf2d adjustedClick = { click.x - SCREENSIZE.x / 2.f, click.y - SCREENSIZE.y / 2.f };
-			for (auto& bodyPtr : planets) {
-				auto body = bodyPtr.get();
-				if (isClicked(body, adjustedClick)) {
-					if (alreadyClicking && body->id == clickedPlanetId) {
-						// TODO: Draw ellipsis
-						body->orbitRadius = abs(adjustedClick.x) / 2.f; //abs(adjustedClick.x + clickOffset.x);
-						body->orbitEccentricity = abs(adjustedClick.x) / 2.f; //abs(adjustedClick.y + clickOffset.y);
-					} else if (alreadyClicking) {
-						deactivatePlanet(clickedPlanetId);
-						body->isEditing = true;
-						clickedPlanetId = body->id;
-						clickOffset = { adjustedClick.x - body->position.x, adjustedClick.y - body->position.y };
-					} else {
-						alreadyClicking = true;
-						body->isEditing = true;
-						clickedPlanetId = body->id;
-						clickOffset = { adjustedClick.x - body->position.x, adjustedClick.y - body->position.y };
-					}
-					return;
-				}
-			}
-		} else {
-			if (alreadyClicking) {
-				deactivatePlanet(clickedPlanetId);
-				alreadyClicking = false;
-			}
-		}
-		*/
 	}
-	
-	void handleSolarActivation(Body* body) {}
 
 	void drawState(float dt) {
 		draw.WorldOffset(CENTER);
@@ -546,23 +554,32 @@ public:
 	void handleCollision(Body* body1, Body* body2) {
 		if (body1->radius > body2->radius) {
 			explosions.push_back(body2->position);
-			soundEngine.play(body2->id);
+			soundEngine.play(body2->id, ARP);
 			removeEntity(body2->id);
 		} else if (body1->radius < body2->radius) {
 			explosions.push_back(body1->position);
-			soundEngine.play(body1->id);
+			soundEngine.play(body1->id, ARP);
 			removeEntity(body1->id);
 		} else {
 			explosions.push_back(body1->position);
-			soundEngine.play(body1->id);
+			soundEngine.play(body1->id, ARP);
 			removeEntity(body1->id);
 			explosions.push_back(body2->position);
-			soundEngine.play(body2->id);
+			soundEngine.play(body2->id, ARP);
 			removeEntity(body2->id);
 		}
 	}
 
 	void removeEntity(int id) {
+		if (highlightedPlanet != NULL && highlightedPlanet->id == id) { 
+			highlightedPlanet = NULL;
+			highlightingPlanet = false;
+		}
+		if (modifiedPlanet != NULL && modifiedPlanet->id == id) { 
+			modifiedPlanet = NULL;
+			modifyingPlanet = false; 
+		}
+		soundEngine.stop(id);
 		for (auto idx = 0; idx < planets.size(); idx++) {
 			auto body = planets[idx].get();
 			if (body->id == id) {
