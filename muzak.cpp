@@ -1,5 +1,6 @@
 #define OLC_PGE3_APPLICATION
 #include "olcPixelGameEngine3.h"
+#define MINIAUDIO_IMPLEMENTATION
 #include "miniaudio.h"
 
 #if defined(__PGETINKER__)
@@ -12,17 +13,21 @@ static inline void pgetinker_file_resolve(const char* url, const char* mountPath
 // Planet interactions: try
 	// Relative deformation
 	// Add NESW pole controls
-// Audio
-	// Vector with 'synths': id == a planet id / the sun
-		// Each synth has two waveforms, a drone and a arp; and a master delay
-	// Master LPF
 // Game progression
 // Menus
 // Details
-	// Layer for background, flares, editor lines
 	// Shaders + effects
 	// Starfield background
-	// Dev mode
+	// Dev / Creative mode
+
+#define FORMAT              ma_format_f32
+#define CHANNELS            2
+#define SAMPLE_RATE         48000
+#define LPF_BIAS            0.9f    /* Higher values means more bias towards the low pass filter (the low pass filter will be more audible). Lower values means more bias towards the echo. Must be between 0 and 1. */
+#define LPF_CUTOFF_FACTOR   80      /* High values = more filter. */
+#define LPF_ORDER           8
+#define DELAY_IN_SECONDS    0.2f
+#define DECAY               0.5f    /* Volume falloff for each echo. */
 
 const olc::vf2d 	SCREENSIZE = { 500.f,500.f };
 const float 		SCREEN_DIAGONAL_SQUARED = powf(SCREENSIZE.x, 2.f) + powf(SCREENSIZE.y, 2.f);
@@ -203,61 +208,101 @@ enum SoundComponentTarget {
 struct PlanetSoundComponent {
 	int id;
 
-	miniaudio::ma_waveform 			drone;			// Sine
-    miniAudio::ma_waveform_config 	droneConfig;
-	miniAudio::ma_delay_node    	droneDelay;
+	ma_waveform 			drone;			// Sine
+	ma_waveform 			arp;			// Square
+	ma_delay_node    		delay;
 
-	miniaudio::ma_waveform 			arp;			// Square
-    miniAudio::ma_waveform_config 	arpConfig;
-	miniAudio::ma_delay_node    	arpDelay;
-
-	PlanetSoundComponent() {
-		// Initialize everything
+	PlanetSoundComponent(int newId) {
+		id = newId;
 	}
 };
 
 struct MainSoundComponent {
-	miniaudio::ma_node_graph    		g_nodeGraph;
-	miniaudio::ma_lpf_node      		g_lpfNode;
-	std::vector<PlanetSoundComponent> 	synths;
+	inline static ma_node_graph    										nodeGraph;
+	inline static ma_lpf_node      										lowPass;
+    inline static ma_device 											device;
+	inline static std::vector<std::unique_ptr<PlanetSoundComponent>> 	synths;
+	inline static std::vector<int> toPlay = {};
 	
 	MainSoundComponent() {
-		for (auto i = 0; i < 10; i++) {
-			// synths.append(PlanetSoundComponent());
-		}
-
-		// Setup node graph
+		// Set up node graph
+    	ma_result result;
         ma_node_graph_config nodeGraphConfig = ma_node_graph_config_init(CHANNELS);
-
-        result = ma_node_graph_init(&nodeGraphConfig, NULL, &g_nodeGraph);
-        if (result != MA_SUCCESS) {
-            printf("ERROR: Failed to initialize node graph.");
-            return -1;
-        }
+    	if (ma_node_graph_init(&nodeGraphConfig, NULL, &nodeGraph) && !MA_SUCCESS) {
+			printf("Failed to initialize nodegraph.\n");
+		}
 
 		// Set up LPF
         ma_lpf_node_config lpfNodeConfig = ma_lpf_node_config_init(CHANNELS, SAMPLE_RATE, SAMPLE_RATE / LPF_CUTOFF_FACTOR, LPF_ORDER);
+       	if (ma_lpf_node_init(&nodeGraph, &lpfNodeConfig, NULL, &lowPass) && !MA_SUCCESS) {
+			printf("Failed to initialize LPF.\n");
+		}
+        ma_node_attach_output_bus(&lowPass, 0, ma_node_graph_get_endpoint(&nodeGraph), 0);
 
-        result = ma_lpf_node_init(&g_nodeGraph, &lpfNodeConfig, NULL, &g_lpfNode);
-        if (result != MA_SUCCESS) {
-            printf("ERROR: Failed to initialize low pass filter node.");
-            return -1;
-        }
+		// Set up each instrument
+		for (auto i = 0; i < 10; i++) {
+			synths.push_back(std::make_unique<PlanetSoundComponent>(i));
+			auto synth = synths[i].get();
 
-        /* Connect the output bus of the low pass filter node to the input bus of the endpoint. */
-        ma_node_attach_output_bus(&g_lpfNode, 0, ma_node_graph_get_endpoint(&g_nodeGraph), 0);
+			// Delay
+			ma_delay_node_config delayNodeConfig = ma_delay_node_config_init(CHANNELS, SAMPLE_RATE, (ma_uint32)(SAMPLE_RATE * DELAY_IN_SECONDS), DECAY);
+			ma_delay_node_init(&nodeGraph, &delayNodeConfig, NULL, &synth->delay);
+			ma_node_attach_output_bus(&synth->delay, 0, &lowPass, 0);
 
-        /* Set the volume of the low pass filter to make it more of less impactful. */
-        ma_node_set_output_bus_volume(&g_lpfNode, 0, LPF_BIAS);
+			// Synths
+			ma_waveform_config droneConfig;
+			droneConfig = ma_waveform_config_init(FORMAT, CHANNELS, SAMPLE_RATE, ma_waveform_type_sine, 0.2, 440);
+			if (ma_waveform_init(&droneConfig, &synth->drone) && !MA_SUCCESS) {
+				printf("Failed to initialize Synth.\n");
+			}
+			ma_node_attach_output_bus(&synth->drone, 0, &lowPass, 0);
+
+			ma_waveform_config arpConfig;
+			arpConfig = ma_waveform_config_init(FORMAT, CHANNELS, SAMPLE_RATE, ma_waveform_type_square, 0.2, 440);
+			ma_waveform_init(&arpConfig, &synth->arp);
+			ma_node_attach_output_bus(&synth->arp, 0, &synth->delay, 0);
+		}
+
+        ma_device_config deviceConfig;
+        deviceConfig = ma_device_config_init(ma_device_type_playback);
+        deviceConfig.playback.format   = FORMAT;
+        deviceConfig.playback.channels = CHANNELS;
+        deviceConfig.sampleRate        = SAMPLE_RATE;
+        deviceConfig.dataCallback      = data_callback;
+        deviceConfig.pUserData         = NULL;
+
+		if (ma_device_init(NULL, &deviceConfig, &device) != MA_SUCCESS) {
+			printf("Failed to open playback device.\n");
+		}
+
+		printf("Device Name: %s\n", device.playback.name);
+
+		if (ma_device_start(&device) != MA_SUCCESS) {
+			printf("Failed to start playback device.\n");
+			ma_device_uninit(&device);
+		}
+	}
+
+	~MainSoundComponent() {
+        ma_device_uninit(&device);
+	}
+
+	static void data_callback(ma_device* pDevice, void* pOutput, const void* pInput, ma_uint32 frameCount)
+	{
+		for (auto synthIdx : toPlay) {
+			auto synth = synths[0].get();
+			ma_waveform_read_pcm_frames(&synth->drone, pOutput, frameCount, NULL);
+		}
+		toPlay.clear();
 	}
 
 	void updateFrequency() {}
 	void updateAmplitude() {}
-	void play() {}
+	void play(int synthIndex) { toPlay.push_back(synthIndex); }
 	void stop() {}
 	void updateDelay() {}
 	void updateFeedback() {}
-}
+};
 
 class MuzakOfTheSpheres : public olc::PixelGameEngine
 {
@@ -277,6 +322,8 @@ public:
 	bool modifyingPlanet = false;
 	Planet* modifiedPlanet;
 	olc::vf2d clickOffset;
+
+	MainSoundComponent soundEngine = MainSoundComponent();
 
     MuzakOfTheSpheres()
     {
@@ -499,14 +546,18 @@ public:
 	void handleCollision(Body* body1, Body* body2) {
 		if (body1->radius > body2->radius) {
 			explosions.push_back(body2->position);
+			soundEngine.play(body2->id);
 			removeEntity(body2->id);
 		} else if (body1->radius < body2->radius) {
 			explosions.push_back(body1->position);
+			soundEngine.play(body1->id);
 			removeEntity(body1->id);
 		} else {
 			explosions.push_back(body1->position);
+			soundEngine.play(body1->id);
 			removeEntity(body1->id);
 			explosions.push_back(body2->position);
+			soundEngine.play(body2->id);
 			removeEntity(body2->id);
 		}
 	}
