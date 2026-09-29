@@ -10,15 +10,15 @@ static inline void pgetinker_file_resolve(const char* url, const char* mountPath
 #endif
 
 // TODO
-// Game progression
-// Menus
-// Details
-	// Shaders + effects
-	// Starfield background
-	// Fix note system
-	// Planet interactions: try
-		// Relative deformation
-		// Add NESW pole controls
+// Spawn planets, asteroids
+// Start menu + restart button
+// Popup fade-in
+// Planet interactions: try
+	// Relative deformation
+	// Add NESW pole controls
+// Refine note system
+// Shaders + effects
+
 
 #define FORMAT              ma_format_f32
 #define CHANNELS            2
@@ -30,19 +30,28 @@ static inline void pgetinker_file_resolve(const char* url, const char* mountPath
 #define DECAY               0.5f
 
 const olc::vf2d 	SCREENSIZE = { 500.f,500.f };
-const float 		SCREEN_DIAGONAL_SQUARED = powf(SCREENSIZE.x, 2.f) + powf(SCREENSIZE.y, 2.f);
+const float 		SCREEN_RADIUS_SQUARED = powf(SCREENSIZE.x / 2.f, 2.f) + powf(SCREENSIZE.y / 2.f, 2.f);
 float 				MU = 12000.f;
 const float 		TWO_PI = 2.f * 3.14159f;
 const olc::vf2d 	CENTER = { SCREENSIZE.x / 2.f, SCREENSIZE.y / 2.f };
 const float 		TAIL_WIDTH = 0.5f;
 const int 			TAIL_LENGTH = 250;
 
-enum starState {
-    T_TAURI, // 100 million : lasts 1 minutes
-	MATURE, // 10 billion : lasts 6 minutes
-	REDGIANT, // 1 billion : lasts 2 minutes
-	NEBULA, // 100 million : lasts 30 seconds
-	WHITEDWARF
+float randomFloat() {
+	return rand() / (float)RAND_MAX;
+}
+
+struct SolarEpoch {
+	std::string name;
+	std::string year;
+	float start;
+	float end;
+	float radius;
+	olc::Pixel color;
+	float flareRegularity;
+	float flareSpeed;
+	float flareBloom;
+	olc::Pixel flareColor;
 };
 
 struct Particle
@@ -58,6 +67,7 @@ public:
 	float radius;
 	olc::vf2d position;
 	int id;
+	olc::Pixel color = olc::Colour::WHITE;
 
 	Body() {}
 };
@@ -67,6 +77,7 @@ public:
 	float speed;
 	float bloom; // overlayCircleRadius = radius - bloom
     olc::Pixel color;
+	olc::Pixel bloomColor = olc::Colour::BLACK;
 
 	SolarFlare(float rad, int newId, float sp, float bl, olc::Pixel hue) {
 		radius = rad;
@@ -78,11 +89,15 @@ public:
 	}
 
 	void update(float dt) {
-		radius += dt * speed;
+		float step = dt * speed;
+		radius += step;
+		float scalar = 1.f - powf((radius - bloom),2.f) / SCREEN_RADIUS_SQUARED;
+		color.a = scalar * 200;
+		bloomColor.a = scalar * 200 + 55;
 	}
 
 	bool exceedsScreen() {
-		return powf((radius - bloom), 2.f) * 2.f > SCREEN_DIAGONAL_SQUARED;
+		return bloomColor.a < 1;
 	}
 
 	Body getBloomShape() {
@@ -92,18 +107,120 @@ public:
 		bloomShape.id = id;
 		return bloomShape;
 	}
-
-	// To find if something is 'in' the flare:
-		// return  overlap(flare, body) && !contains(bloom, body)
 };
 
 struct Star : public Body {
-public:
-    starState starState = T_TAURI;
+	int currentEpochIndex = 0;
+	float currentEpochStart;
+	float currentEpochEnd;
+
+	float flareRegularity;
+	float timeSinceLastFlare = 0.f;
+	bool shouldFlare = false;
+	float flareSpeed;
+	float flareBloom;
+	olc::Pixel flareColor;
+	olc::Pixel targetColor;
+	float targetRadius;
+
+	bool transitioning = false;
+	bool showingPopup = true;
+	float timeShowingPopup = 0.f;
+	std::string epochName;
+	std::string epochYears;
+
+	const std::vector<SolarEpoch> epochs = {
+		// 	name			age						start, 	end, 	radius, color, 					f_reg, 	f_sp, 	f_blm, 	f_color
+		{ 	"T-Tauri",		"Newborn",				0.f, 	25.f, 	12.f, 	olc::Colour::YELLOW, 	8.f, 	50.f, 	2.f, 	olc::Colour::TANGERINE },
+		{ 	"Mature",		"100 million years",	25.f, 	50.f, 	15.f, 	olc::Colour::TANGERINE, 8.f, 	75.f, 	5.f, 	olc::Colour::RED },
+		{ 	"Red Giant",	"12 billion years",		50.f, 	75.f, 	24.f, 	olc::Colour::RED, 		8.f, 	120.f, 	10.f, 	olc::Colour::DARK_RED },
+		{ 	"Nebula",		"13 billion years",		75.f, 	100.f, 	12.f, 	olc::Colour::BLUE, 		8.f, 	100.f, 	5.f, 	olc::Colour::WHITE },
+		{ 	"White dwarf",	"13.2 billion years",	100.f, 	125.f, 	6.f, 	olc::Colour::WHITE, 	8.f, 	75.f, 	1.f, 	olc::Colour::YELLOW }
+	};
+
 	Star() {
-		radius = 20.f;
+		updateEpoch();
+		radius = targetRadius;
+		color = targetColor;
 		position = { 0.f, 0.f };
-		id = -1;
+		id = 0;
+	}
+
+	void update(float dt, float totalElapsedTime) {
+		if (transitioning) { 
+			stepTransition(); 
+		}
+		else if (totalElapsedTime >= currentEpochEnd) {
+			currentEpochIndex += 1;
+			updateEpoch();
+			transitioning = true;
+			showingPopup = true;
+		}
+		timeSinceLastFlare += dt;
+		if (showingPopup) {
+			timeShowingPopup += dt;
+			if (timeShowingPopup > 10.f) {
+				showingPopup = false;
+				timeShowingPopup = 0.f;
+			}
+		}
+		if (timeSinceLastFlare >= flareRegularity) {
+			shouldFlare = true;
+			timeSinceLastFlare = 0.f;
+		}
+	}
+
+	void updateEpoch() {
+		auto newEpoch = epochs[currentEpochIndex];
+		currentEpochStart = newEpoch.start;
+		currentEpochEnd = newEpoch.end;
+		flareRegularity = newEpoch.flareRegularity;
+		flareSpeed = newEpoch.flareSpeed;
+		flareBloom = newEpoch.flareBloom;
+		flareColor = newEpoch.flareColor;
+		targetRadius = newEpoch.radius;
+		targetColor = newEpoch.color;
+		epochName = newEpoch.name;
+		epochYears = newEpoch.year;
+	}
+
+	void stepTransition() {
+		bool finishedColorChange = color == targetColor;
+		bool finishedRadiusResize = abs(radius - targetRadius) < 0.1;
+		if (!finishedColorChange) {
+			changeColor();
+		}
+		if (!finishedRadiusResize) {
+			if (radius < targetRadius) {
+				radius += 0.1f;
+			} else {
+				radius -= 0.1f;
+			}
+		}
+		if (finishedColorChange && finishedRadiusResize) {
+			transitioning = false;
+		}
+	}
+
+	void changeColor() {
+		if (targetColor.r > color.r) {
+			color.r += 1;
+		}
+		else if (targetColor.r < color.r) {
+			color.r -= 1;
+		}
+		if (targetColor.b > color.b) {
+			color.b += 1;
+		}
+		else if (targetColor.b < color.b) {
+			color.b -= 1;
+		}
+		if (targetColor.g > color.g) {
+			color.g += 1;
+		}
+		else if (targetColor.g < color.g) {
+			color.g -= 1;
+		}
 	}
 };
 
@@ -199,6 +316,38 @@ public:
 		path.insert(path.begin(), position);
         if (path.size() > TAIL_LENGTH)
             path.pop_back();
+	}
+};
+
+struct BackgroundStar {
+	olc::vf2d position;
+	bool activated;
+};
+
+struct Background {
+	std::vector<BackgroundStar> starfield;
+	std::vector<int> activatedStars;
+
+	Background() {
+		for (auto i = 0; i < 128; i++) {
+            BackgroundStar newStar = { { (randomFloat() * SCREENSIZE.x) - CENTER.x, (randomFloat() * SCREENSIZE.y) - CENTER.y }, false };
+			starfield.push_back(newStar);
+		}
+	}
+
+	void update() {
+		float a = randomFloat();
+		if (a > 0.8f) {
+			auto i = (int)(randomFloat() * 127);
+			starfield[i].activated = true;
+			activatedStars.push_back(i);
+		}
+		a = randomFloat();
+		if (a > .95) {
+			auto i = (int)(randomFloat() * activatedStars.size());
+			starfield[activatedStars[i]].activated = false;
+			activatedStars.erase(std::next(activatedStars.begin(), i));
+		}
 	}
 };
 
@@ -337,7 +486,7 @@ struct MainSoundComponent {
 class MuzakOfTheSpheres : public olc::PixelGameEngine
 {
 public:
-    float totalElapsedTime;
+    float totalElapsedTime = 0.f;
     Star sun;
     std::vector<std::unique_ptr<Planet>> planets;
     std::vector<std::unique_ptr<SolarFlare>> flares;
@@ -353,6 +502,7 @@ public:
 	Planet* modifiedPlanet = NULL;
 	olc::vf2d clickOffset;
 
+	Background background = Background();
 	MainSoundComponent soundEngine = MainSoundComponent();
 
     MuzakOfTheSpheres()
@@ -371,12 +521,7 @@ public:
 	bool OnUserUpdate(float fElapsedTime) override
 	{
 		totalElapsedTime += fElapsedTime;
-
-		if (fmod(totalElapsedTime, 10.f) == 0.f) {	// DEBUG
-			flares.push_back(std::make_unique<SolarFlare>(20.f, 0, 10.f, 10.f, olc::Colour::RED));
-		}
 		drawState(fElapsedTime);
-
         return true;
     }
 
@@ -396,6 +541,10 @@ public:
 	void checkForSolarFlareActivations() {
         for (auto idx = 0; idx < flares.size(); idx++) {
 			auto flare = flares[idx].get();
+			if (flare->exceedsScreen()) {
+				flares.erase(std::next(flares.begin(), idx));
+				continue;
+			}
             for (auto idx2 = 0; idx2 < planets.size(); idx2++) {
                 auto body = planets[idx2].get();
 				auto currentlyActivated = body->isActivated;
@@ -414,8 +563,8 @@ public:
 	bool isInSolarFlare(SolarFlare* flare, Body* body) {
 		Body bloom = flare->getBloomShape();
 		bool collided = areColliding(flare, body);
-		bool contained = !contains(&bloom, body);
-		return collided && contained;
+		bool notInsideBloom = !contains(&bloom, body);
+		return collided && notInsideBloom;
 	}
 
 	void handleUserInput() {
@@ -483,22 +632,38 @@ public:
 		draw.WorldOffset(CENTER);
         draw.Clear(olc::Colour::BLACK);
 		handleUserInput();
-        for (auto& bodyPtr : planets) {
-            auto body = bodyPtr.get();
-            body->update(dt);
-        }
+
+		// Simulate
+		background.update();
         for (auto& flarePtr : flares) {
             auto flare = flarePtr.get();
             flare->update(dt);
         }
+		sun.update(dt, totalElapsedTime);
+		if (sun.shouldFlare) {
+			flares.push_back(std::make_unique<SolarFlare>(sun.radius, sun.id, sun.flareSpeed, sun.flareBloom, sun.flareColor));
+			sun.shouldFlare = false;
+		}
+        for (auto& bodyPtr : planets) {
+            auto body = bodyPtr.get();
+            body->update(dt);
+        }
+		// - Asteroids and planet generation
+
+		// Collision detection
         checkForCollisions();
 		checkForSolarFlareActivations();
+
+		// Draw
+		for (auto& backgroundStar : background.starfield) {
+            draw.FilledCircle(backgroundStar.position, backgroundStar.activated ? 0.4f : 0.2f, olc::Colour::WHITE);
+		}
         for (auto& flarePtr : flares) {
             auto flare = flarePtr.get();
             draw.FilledCircle(flare->position, flare->radius, flare->color);
-			draw.FilledCircle(flare->position, flare->radius - flare->bloom, olc::Colour::BLACK);
+			draw.FilledCircle(flare->position, flare->radius - flare->bloom, flare->bloomColor);
         }
-        draw.FilledCircle({0.f, 0.f}, sun.radius, olc::Colour::TANGERINE);
+        draw.FilledCircle({0.f, 0.f}, sun.radius, sun.color);
         for (auto& bodyPtr : planets) {
             auto body = bodyPtr.get();
             draw.FilledCircle(body->position, body->radius, olc::Colour::BLUE);
@@ -508,8 +673,15 @@ public:
 				}
 			}
         }
+		// - Asteroids
 		handleExplosions(dt);
+
 		draw.WorldReset();
+		if (sun.showingPopup) {
+			olc::vf2d largeText = draw.GetTextSize(sun.epochName, false, { 2.0f, 4.0f });
+			draw.StringProp({ 0,0 }, sun.epochName, olc::Colour::WHITE, { 2.0f, 4.0f });
+			draw.StringProp({ 0,largeText.y + 5.f }, sun.epochYears, olc::Colour::WHITE, { 2.0f, 4.0f });
+		}
 	}
 
 	void handleExplosions(float dt) {
@@ -610,8 +782,8 @@ public:
         for(int i = 0; i < count; i++)
 		{
 			olc::Pixel color = colors[i];
-			float angle = (rand() / (float)RAND_MAX) * 2.0f * 3.14f;
-            float speed = 5.0f + (rand() / (float)RAND_MAX);
+			float angle = randomFloat() * 2.0f * 3.14f;
+            float speed = 5.0f + randomFloat();
             
             Particle p;
             p.position = pos;
@@ -620,7 +792,7 @@ public:
 				std::sin(angle) * speed
 			};
             p.color = color;
-            p.life = 1.0f + (rand() / (float)RAND_MAX);
+            p.life = 1.0f + randomFloat();
             
             vecParticles.push_back(p);
         }
