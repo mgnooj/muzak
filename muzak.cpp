@@ -11,14 +11,13 @@ static inline void pgetinker_file_resolve(const char* url, const char* mountPath
 
 // TODO
 // Spawn planets, asteroids
-// Start menu + restart button
-// Popup fade-in
 // Planet interactions: try
 	// Relative deformation
 	// Add NESW pole controls
 // Refine note system
+// Popup fade-in
 // Shaders + effects
-
+// Start menu
 
 #define FORMAT              ma_format_f32
 #define CHANNELS            2
@@ -128,6 +127,7 @@ struct Star : public Body {
 	float timeShowingPopup = 0.f;
 	std::string epochName;
 	std::string epochYears;
+	bool completedLifecycle = false;
 
 	const std::vector<SolarEpoch> epochs = {
 		// 	name			age						start, 	end, 	radius, color, 					f_reg, 	f_sp, 	f_blm, 	f_color
@@ -135,7 +135,7 @@ struct Star : public Body {
 		{ 	"Mature",		"100 million years",	25.f, 	50.f, 	15.f, 	olc::Colour::TANGERINE, 8.f, 	75.f, 	5.f, 	olc::Colour::RED },
 		{ 	"Red Giant",	"12 billion years",		50.f, 	75.f, 	24.f, 	olc::Colour::RED, 		8.f, 	120.f, 	10.f, 	olc::Colour::DARK_RED },
 		{ 	"Nebula",		"13 billion years",		75.f, 	100.f, 	12.f, 	olc::Colour::BLUE, 		8.f, 	100.f, 	5.f, 	olc::Colour::WHITE },
-		{ 	"White dwarf",	"13.2 billion years",	100.f, 	125.f, 	6.f, 	olc::Colour::WHITE, 	8.f, 	75.f, 	1.f, 	olc::Colour::YELLOW }
+		{ 	"White dwarf",	"13.2 billion years",	100.f, 	9999.f, 6.f, 	olc::Colour::WHITE, 	8.f, 	75.f, 	1.f, 	olc::Colour::YELLOW }
 	};
 
 	Star() {
@@ -152,6 +152,7 @@ struct Star : public Body {
 		}
 		else if (totalElapsedTime >= currentEpochEnd) {
 			currentEpochIndex += 1;
+			completedLifecycle = currentEpochIndex == 4;
 			updateEpoch();
 			transitioning = true;
 			showingPopup = true;
@@ -679,9 +680,14 @@ public:
 		draw.WorldReset();
 		if (sun.showingPopup) {
 			olc::vf2d largeText = draw.GetTextSize(sun.epochName, false, { 2.0f, 4.0f });
-			draw.StringProp({ 0,0 }, sun.epochName, olc::Colour::WHITE, { 2.0f, 4.0f });
-			draw.StringProp({ 0,largeText.y + 5.f }, sun.epochYears, olc::Colour::WHITE, { 2.0f, 4.0f });
+			draw.String({ 5,5 }, sun.epochName, olc::Colour::WHITE, { 2.0f, 4.0f });
+			draw.String({ 5,largeText.y + 5.f }, sun.epochYears, olc::Colour::WHITE, { 2.0f, 4.0f });
+		} else if (sun.completedLifecycle) {
+			olc::vf2d largeText = draw.GetTextSize("RESTART", false, { 2.0f, 4.0f });
+			draw.String({ CENTER.x - largeText.x, SCREENSIZE.y - (largeText.y / 2.f) }, "RESTART", olc::Colour::WHITE, { 2.0f, 4.0f });
+			// TODO: It doesn't do anything yet
 		}
+
 	}
 
 	void handleExplosions(float dt) {
