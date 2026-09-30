@@ -10,10 +10,8 @@ static inline void pgetinker_file_resolve(const char* url, const char* mountPath
 #endif
 
 // TODO
-// optimize
-// sun should play sound
-// click on sun to trigger solar flare (?)
-// Planet formation, design
+// Audio stops
+// Optimize
 // FX + shaders
 
 // Game constants
@@ -37,6 +35,27 @@ const float 		DECAY 					= 0.5f;
 
 float randomFloat() {
 	return rand() / static_cast<float>(RAND_MAX);
+}
+
+void changeColor(olc::Pixel& color, olc::Pixel& targetColor) {
+	if (targetColor.r > color.r) {
+		color.r += 1;
+	}
+	else if (targetColor.r < color.r) {
+		color.r -= 1;
+	}
+	if (targetColor.b > color.b) {
+		color.b += 1;
+	}
+	else if (targetColor.b < color.b) {
+		color.b -= 1;
+	}
+	if (targetColor.g > color.g) {
+		color.g += 1;
+	}
+	else if (targetColor.g < color.g) {
+		color.g -= 1;
+	}
 }
 
 struct SolarEpoch {
@@ -133,10 +152,10 @@ struct Star : public Body {
 	const std::vector<SolarEpoch> epochs = {
 		// 	name			age						start, 	end, 	radius, color, 					f_reg, 	f_sp, 	f_blm, 	f_color					#planets
 		{ 	"T-Tauri",		"Newborn",				0.f, 	25.f, 	12.f, 	olc::Colour::YELLOW, 	8.f, 	50.f, 	2.f, 	olc::Colour::TANGERINE,	2 },
-		{ 	"Mature",		"100 million years",	25.f, 	50.f, 	15.f, 	olc::Colour::TANGERINE, 8.f, 	75.f, 	5.f, 	olc::Colour::RED, 		5 },
-		{ 	"Red Giant",	"12 billion years",		50.f, 	75.f, 	24.f, 	olc::Colour::RED, 		8.f, 	120.f, 	10.f, 	olc::Colour::DARK_RED, 	6 },
+		{ 	"Mature",		"100 million years",	25.f, 	50.f, 	15.f, 	olc::Colour::TANGERINE, 8.f, 	75.f, 	15.f, 	olc::Colour::RED, 		4 },
+		{ 	"Red Giant",	"12 billion years",		50.f, 	75.f, 	24.f, 	olc::Colour::RED, 		8.f, 	120.f, 	8.f, 	olc::Colour::DARK_RED, 	6 },
 		{ 	"Nebula",		"13 billion years",		75.f, 	100.f, 	12.f, 	olc::Colour::BLUE, 		8.f, 	100.f, 	5.f, 	olc::Colour::WHITE, 	6 },
-		{ 	"White dwarf",	"13.2 billion years",	100.f, 	9999.f, 6.f, 	olc::Colour::WHITE, 	8.f, 	75.f, 	1.f, 	olc::Colour::YELLOW, 	3 }
+		{ 	"White dwarf",	"13.2 billion years",	100.f, 	9999.f, 6.f, 	olc::Colour::WHITE, 	8.f, 	75.f, 	2.f, 	olc::Colour::YELLOW, 	3 }
 	};
 
 	Star() {
@@ -217,7 +236,7 @@ struct Star : public Body {
 		bool finishedColorChange = color == targetColor;
 		bool finishedRadiusResize = abs(radius - targetRadius) < 0.1;
 		if (!finishedColorChange) {
-			changeColor();
+			changeColor(color, targetColor);
 		}
 		if (!finishedRadiusResize) {
 			if (radius < targetRadius) {
@@ -228,27 +247,6 @@ struct Star : public Body {
 		}
 		if (finishedColorChange && finishedRadiusResize) {
 			transitioning = false;
-		}
-	}
-
-	void changeColor() {
-		if (targetColor.r > color.r) {
-			color.r += 1;
-		}
-		else if (targetColor.r < color.r) {
-			color.r -= 1;
-		}
-		if (targetColor.b > color.b) {
-			color.b += 1;
-		}
-		else if (targetColor.b < color.b) {
-			color.b -= 1;
-		}
-		if (targetColor.g > color.g) {
-			color.g += 1;
-		}
-		else if (targetColor.g < color.g) {
-			color.g -= 1;
 		}
 	}
 };
@@ -270,13 +268,15 @@ struct Planet : public MovingBody {
 	bool isHighlighted = false;
 	bool isActivated = false;
 
-	Planet(float rad, float startPhase, int newId, float sp, float orbRad, float orbEcc) {
+	Planet(float rad, float startPhase, int newId, float sp, float orbRad, float orbEcc, olc::Pixel shade) {
 		radius = rad;
-		phase = startPhase * TWO_PI;
+		//phase = startPhase * TWO_PI;
+		phase = startPhase;
 		id = newId;
 		speed = sp;
 		orbitRadius = orbRad;
 		orbitEccentricity = orbEcc;
+		color = shade;
 		calculateOutline();
 	}
 
@@ -407,7 +407,7 @@ struct MainSoundComponent {
         ma_node_set_output_bus_volume(&lowPass, 0, LPF_BIAS);
 
 		// Set up each instrument
-		for (auto i = 0; i < 10; i++) {	// TODO: max_num planets + sun? sun should play sound
+		for (auto i = 0; i < 7; i++) {	// max_num planets + sun sun should play sound
 			synths.push_back(std::make_unique<PlanetSoundComponent>(i));
 			auto synth = synths[i].get();
 
@@ -417,13 +417,13 @@ struct MainSoundComponent {
 			ma_node_attach_output_bus(&synth->delay, 0, &lowPass, 0);
 
 			// Synths
-			ma_waveform_config droneConfig = ma_waveform_config_init(FORMAT, CHANNELS, SAMPLE_RATE, ma_waveform_type_sine, 0.0, 220);
+			ma_waveform_config droneConfig = ma_waveform_config_init(FORMAT, CHANNELS, SAMPLE_RATE, ma_waveform_type_sine, 0.0, 110);
 			ma_waveform_init(&droneConfig, &synth->drone);
 			ma_data_source_node_config droneNodeConfig = ma_data_source_node_config_init(&synth->drone);
 			ma_data_source_node_init(&nodeGraph, &droneNodeConfig, NULL, &synth->droneNode);
 			ma_node_attach_output_bus(&synth->droneNode, 0, &synth->delay, 0);
 
-			ma_waveform_config arpConfig = ma_waveform_config_init(ma_format_f32, CHANNELS, SAMPLE_RATE, ma_waveform_type_triangle, 0.0, 440);
+			ma_waveform_config arpConfig = ma_waveform_config_init(ma_format_f32, CHANNELS, SAMPLE_RATE, ma_waveform_type_triangle, 0.0, 110);
 			ma_waveform_init(&arpConfig, &synth->arp);
 			ma_data_source_node_config arpNodeConfig = ma_data_source_node_config_init(&synth->arp);
 			ma_data_source_node_init(&nodeGraph, &arpNodeConfig, NULL, &synth->arpNode);
@@ -507,7 +507,7 @@ public:
     std::vector<std::unique_ptr<SolarFlare>> flares;
 	std::vector<olc::vf2d> explosions;
 	std::vector<Particle> vecParticles;
-	std::vector<int> planetsToSpawn = { 0, 1, 2, 3, 4, 5 };
+	std::vector<int> planetsToSpawn = { 1, 2, 3, 4, 5, 6 };
 	bool mouseHeld = false;
 
 	bool highlightingPlanet = false;
@@ -526,6 +526,9 @@ public:
 
 	float timeSinceLastSpawnedPlanet = 0.f;
 	const float MIN_PLANET_SIZE = 10.f;
+	bool spawningPlanet = false;
+	olc::Pixel spawnColor = olc::Colour::BLACK;
+	Planet planetToSpawn = { 0.f, 0.f, 0, 0.f, 0.f, 0.f, olc::Colour::WHITE };
 
 	Background background = Background();
 	MainSoundComponent soundEngine = MainSoundComponent();
@@ -562,17 +565,17 @@ public:
 		startButtonSize = { textArea.x + 20.f, textArea.y + 10.f };
 
 		spawnPlanet();
-		spawnPlanet();
+		//spawnPlanet();
 
 		return true;
 	}
 
 	bool OnUserUpdate(float fElapsedTime) override
 	{
-		totalElapsedTime += fElapsedTime;
 		if (onStartMenu) {
 			drawStartMenu();
 		} else {
+			totalElapsedTime += fElapsedTime;
 			drawState(fElapsedTime);
 		}
         return true;
@@ -659,6 +662,9 @@ public:
 			if (sun.showRestartButton && rectContainsPoint(restartButtonPosition, restartButtonSize, mousePosition)) {
 				restart();
 			}
+			if (isClicked(&sun, adjustedMousePosition)) {
+				sun.shouldFlare = true;
+			}
 			if (highlightingPlanet) {
 				highlightingPlanet = false;
 				modifyingPlanet = true;
@@ -730,6 +736,7 @@ public:
 		sun.update(dt, totalElapsedTime);
 		if (sun.shouldFlare) {
 			flares.push_back(std::make_unique<SolarFlare>(sun.radius, sun.id, sun.flareSpeed, sun.flareBloom, sun.flareColor));
+			soundEngine.play(0, ARP);
 			sun.shouldFlare = false;
 		}
         for (auto& bodyPtr : planets) {
@@ -748,8 +755,13 @@ public:
 		timeSinceLastAsteroid += dt;
 
 		// planet generation
-		timeSinceLastSpawnedPlanet += dt;
-		shouldSpawnPlanet();
+		if (spawningPlanet) {
+			stepPlanetFormation();
+            draw.FilledCircle(planetToSpawn.position, planetToSpawn.radius, spawnColor);
+		} else {
+			timeSinceLastSpawnedPlanet += dt;
+			shouldSpawnPlanet();
+		}
 
 		// Draw
 		for (auto& backgroundStar : background.starfield) {
@@ -763,10 +775,10 @@ public:
         draw.FilledCircle({0.f, 0.f}, sun.radius, sun.color);
         for (auto& bodyPtr : planets) {
             auto body = bodyPtr.get();
-            draw.FilledCircle(body->position, body->radius, olc::Colour::BLUE);
+            draw.FilledCircle(body->position, body->radius, body->color);
 			if (body->isHighlighted) {
 				for (auto& point : body->orbitOutline) {
-					draw.FilledCircle(point, 0.5f, olc::Colour::WHITE);
+					draw.FilledCircle(point, 2.f, body->color);
 				}
 			}
         }
@@ -925,18 +937,18 @@ public:
 		if (body1->radius > body2->radius) {
 			explosions.push_back(body2->position);
 			soundEngine.play(body2->id, ARP);
-			removeEntity(body2->id);
+			removePlanet(body2->id);
 		} else if (body1->radius < body2->radius) {
 			explosions.push_back(body1->position);
 			soundEngine.play(body1->id, ARP);
-			removeEntity(body1->id);
+			removePlanet(body1->id);
 		} else {
 			explosions.push_back(body1->position);
 			soundEngine.play(body1->id, ARP);
-			removeEntity(body1->id);
+			removePlanet(body1->id);
 			explosions.push_back(body2->position);
 			soundEngine.play(body2->id, ARP);
-			removeEntity(body2->id);
+			removePlanet(body2->id);
 		}
 	}
 
@@ -949,10 +961,10 @@ public:
 	void handleSunCollision(Body* body) {
 		explosions.push_back(body->position);
 		soundEngine.play(body->id, ARP);
-		removeEntity(body->id);
+		removePlanet(body->id);
 	}
 
-	void removeEntity(int id) {
+	void removePlanet(int id) {
 		if (highlightedPlanet != NULL && highlightedPlanet->id == id) { 
 			highlightedPlanet = NULL;
 			highlightingPlanet = false;
@@ -969,6 +981,7 @@ public:
 				return;
 			}
 		}
+		planetsToSpawn.push_back(id);
 	}
 
 	void removeAsteroid(int id) {
@@ -1068,8 +1081,22 @@ public:
 		planetsToSpawn.erase(std::next(planetsToSpawn.begin(), selectedPlanetIdx));
 		const float diff = (4.f - static_cast<float>(abs(3 - planetIdx))) * 2.f; // Larger planets in middle of system
 		const float orbit = static_cast<float>(planetIdx) / 6.f * (CENTER.y * 0.9f) + sun.radius;
-		planets.push_back(std::make_unique<Planet>(MIN_PLANET_SIZE + diff, a, planetIdx, 1.f + randomFloat(), orbit, orbit));
+		float b = randomFloat(); // speed modifier + color selector
+		int colorIdx = floor(b * (colors.size() - 1));
+		olc::Pixel color = colors[colorIdx];
+		spawnColor = olc::Colour::BLACK;
+		planetToSpawn = { MIN_PLANET_SIZE + diff, a, planetIdx, 1.f + b, orbit, orbit, color };
+		spawningPlanet = true;
 		soundEngine.updateFrequency(planetIdx, orbit * orbit);
+	}
+
+	void stepPlanetFormation() {
+		if (spawnColor == planetToSpawn.color) {
+			planets.push_back(std::make_unique<Planet>(planetToSpawn.radius, planetToSpawn.phase, planetToSpawn.id, planetToSpawn.speed, planetToSpawn.orbitRadius, planetToSpawn.orbitEccentricity, planetToSpawn.color));
+			spawningPlanet = false;
+		} else {
+			changeColor(spawnColor, planetToSpawn.color);
+		}
 	}
 };
 
