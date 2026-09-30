@@ -10,34 +10,31 @@ static inline void pgetinker_file_resolve(const char* url, const char* mountPath
 #endif
 
 // TODO
-// Spawn planets, asteroids
-// Planet interactions: try
-	// Relative deformation
-	// Add NESW pole controls
-// Refine note system
-// Popup fade-in
-// Shaders + effects
-// Start menu
+// Spawn planets
+// Planet interactions: Relative deformation
+// Details: Planet design; FX + shaders; refine note system
 
-#define FORMAT              ma_format_f32
-#define CHANNELS            2
-#define SAMPLE_RATE         48000
-#define LPF_BIAS            0.9f
-#define LPF_CUTOFF_FACTOR   80
-#define LPF_ORDER           8
-#define DELAY_IN_SECONDS    0.2f
-#define DECAY               0.5f
+// Game constants
+const olc::vf2d 	SCREENSIZE 				= { 500.f,500.f };
+const olc::vf2d 	CENTER 					= { SCREENSIZE.x / 2.f, SCREENSIZE.y / 2.f };
+const float 		SCREEN_RADIUS_SQUARED 	= powf(CENTER.x, 2.f) + powf(CENTER.y, 2.f);
+const float 		TWO_PI 					= 2.f * 3.14159f;
+const float 		TAIL_WIDTH 				= 0.5f;
+const int 			TAIL_LENGTH 			= 100;
 
-const olc::vf2d 	SCREENSIZE = { 500.f,500.f };
-const float 		SCREEN_RADIUS_SQUARED = powf(SCREENSIZE.x / 2.f, 2.f) + powf(SCREENSIZE.y / 2.f, 2.f);
-float 				MU = 12000.f;
-const float 		TWO_PI = 2.f * 3.14159f;
-const olc::vf2d 	CENTER = { SCREENSIZE.x / 2.f, SCREENSIZE.y / 2.f };
-const float 		TAIL_WIDTH = 0.5f;
-const int 			TAIL_LENGTH = 250;
+// Audio constants
+#define 			FORMAT ma_format_f32
+const int 			CHANNELS 				= 2;
+const int 			SAMPLE_RATE 			= 48000;
+const float 		SAMPLE_RATE_FLOAT 		= static_cast<float>(SAMPLE_RATE);
+const float 		LPF_BIAS 				= 0.9f;
+const int 			LPF_CUTOFF_FACTOR 		= 80;
+const int 			LPF_ORDER 				= 8;
+const float 		DELAY_IN_SECONDS 		= 0.2f;
+const float 		DECAY 					= 0.5f;
 
 float randomFloat() {
-	return rand() / (float)RAND_MAX;
+	return rand() / static_cast<float>RAND_MAX;
 }
 
 struct SolarEpoch {
@@ -124,9 +121,11 @@ struct Star : public Body {
 
 	bool transitioning = false;
 	bool showingPopup = true;
+	bool showRestartButton = false;
 	float timeShowingPopup = 0.f;
 	std::string epochName;
 	std::string epochYears;
+	olc::Pixel popupColor = olc::Colour::WHITE;
 	bool completedLifecycle = false;
 
 	const std::vector<SolarEpoch> epochs = {
@@ -144,6 +143,24 @@ struct Star : public Body {
 		color = targetColor;
 		position = { 0.f, 0.f };
 		id = 0;
+		popupColor.a = 0;
+	}
+
+	void reinitialize() {
+		currentEpochIndex = 0;
+		transitioning = false;
+		showingPopup = false;
+		showRestartButton = false;
+		timeShowingPopup = 0.f;
+		completedLifecycle = false;
+		updateEpoch();
+		radius = targetRadius;
+		color = targetColor;
+		position = { 0.f, 0.f };
+		id = 0;
+		popupColor.a = 0;
+		transitioning= true;
+		showingPopup = true;
 	}
 
 	void update(float dt, float totalElapsedTime) {
@@ -160,9 +177,24 @@ struct Star : public Body {
 		timeSinceLastFlare += dt;
 		if (showingPopup) {
 			timeShowingPopup += dt;
-			if (timeShowingPopup > 10.f) {
+			if (timeShowingPopup < 3.f) {
+				popupColor.a = std::min(popupColor.a + 5, 255);
+			}
+			else if (timeShowingPopup < 12.f) {
+				popupColor.a = std::max(popupColor.a - 5, 0);
+			}
+			else {
 				showingPopup = false;
 				timeShowingPopup = 0.f;
+				if (completedLifecycle) {
+					showRestartButton = true;
+				}
+			}
+		}
+		if (showRestartButton) {
+			timeShowingPopup += dt;
+			if (timeShowingPopup < 3.f) {
+				popupColor.a = std::min(popupColor.a + 5, 255);
 			}
 		}
 		if (timeSinceLastFlare >= flareRegularity) {
@@ -297,23 +329,9 @@ public:
 		velocity = vel;
 	}
 
-	olc::vf2d accelerationVector() {
-		// Two-body gravity formula mostly derived from
-		// https://www.mysimulator.uk/content/tutorials/orbit-simulation-50-lines-js.html
-		const float r2 = position.x * position.x + position.y * position.y;
-		const float r = std::sqrt(r2);
-		const float f = -MU / (r2 * r);
-		return { f * position.x, f * position.y };
-	}
-
 	void update(float dt) override {
-		const auto a0 = accelerationVector();
-		position.x += velocity.x * dt + 0.5f * a0.x * dt * dt;
-		position.y += velocity.y * dt + 0.5f * a0.y * dt * dt;
-		const auto a1 = accelerationVector();
-		velocity.x += 0.5f * (a0.x + a1.x) * dt;
-		velocity.y += 0.5f * (a0.y + a1.y) * dt;
-
+		position.x += velocity.x * dt;
+		position.y += velocity.y * dt;
 		path.insert(path.begin(), position);
         if (path.size() > TAIL_LENGTH)
             path.pop_back();
@@ -339,13 +357,13 @@ struct Background {
 	void update() {
 		float a = randomFloat();
 		if (a > 0.8f) {
-			auto i = (int)(randomFloat() * 127);
+			auto i = static_cast<int>(randomFloat() * 127);
 			starfield[i].activated = true;
 			activatedStars.push_back(i);
 		}
 		a = randomFloat();
 		if (a > .95) {
-			auto i = (int)(randomFloat() * activatedStars.size());
+			auto i = static_cast<int>(randomFloat() * activatedStars.size());
 			starfield[activatedStars[i]].activated = false;
 			activatedStars.erase(std::next(activatedStars.begin(), i));
 		}
@@ -386,7 +404,7 @@ struct MainSoundComponent {
 		}
 
 		// Set up LPF
-        ma_lpf_node_config lpfNodeConfig = ma_lpf_node_config_init(CHANNELS, SAMPLE_RATE, SAMPLE_RATE / LPF_CUTOFF_FACTOR, LPF_ORDER);
+        ma_lpf_node_config lpfNodeConfig = ma_lpf_node_config_init(CHANNELS, SAMPLE_RATE, SAMPLE_RATE_FLOAT / LPF_CUTOFF_FACTOR, LPF_ORDER);
        	if (ma_lpf_node_init(&nodeGraph, &lpfNodeConfig, NULL, &lowPass) && !MA_SUCCESS) {
 			printf("Failed to initialize LPF.\n");
 		}
@@ -455,7 +473,7 @@ struct MainSoundComponent {
 	const std::vector<double> notes = { 440.0, 493.88, 554.37, 587.33, 659.25, 739.99, 830.61, 880.0 };
 
 	void updateFrequency(int synthIndex, float input) {
-		auto noteIdx = (int)(input * (notes.size() - 1));
+		auto noteIdx = static_cast<int>(input * (notes.size() - 1));
 		auto frequency = notes[noteIdx];
 		auto synth = synths[synthIndex].get();
 		ma_waveform_set_frequency(&synth->drone, frequency / 2.0);
@@ -490,6 +508,7 @@ public:
     float totalElapsedTime = 0.f;
     Star sun;
     std::vector<std::unique_ptr<Planet>> planets;
+    std::vector<std::unique_ptr<Asteroid>> asteroids;
     std::vector<std::unique_ptr<SolarFlare>> flares;
 	std::vector<olc::vf2d> explosions;
 	std::vector<Particle> vecParticles;
@@ -501,41 +520,89 @@ public:
 
 	bool modifyingPlanet = false;
 	Planet* modifiedPlanet = NULL;
+	int modifiedPlanetId = -1;
 	olc::vf2d clickOffset;
+
+	float timeSinceLastAsteroid = 0.f;
+	int asteroidId = 0;
+	const float MAX_ASTEROID_VELOCITY = 60.f;
+	const float MAX_ASTEROID_RADIUS = 4.f;
 
 	Background background = Background();
 	MainSoundComponent soundEngine = MainSoundComponent();
 
+	olc::vf2d restartButtonPosition;
+	olc::vf2d restartButtonSize;
+	olc::vf2d restartButtonTextPosition;
+	olc::vf2d titlePosition;
+	olc::vf2d titleSize;
+	olc::vf2d startButtonPosition;
+	olc::vf2d startButtonSize;
+	olc::vf2d startButtonTextPosition;
+
+	bool onStartMenu = true;
+
     MuzakOfTheSpheres()
     {
         sAppName = "Muzak of the Spheres";
-		planets.push_back(std::make_unique<Planet>(15.f, 0.3f, 0, 1.3f, 100.f, 100.f));
-		planets.push_back(std::make_unique<Planet>(7.f, 0.f, 1, 0.7f, 200.f, 50.f));
-		planets.push_back(std::make_unique<Planet>(9.f, 0.66f, 2, 2.f, 300.f, 50.f));
+		//planets.push_back(std::make_unique<Planet>(15.f, 0.3f, 0, 1.3f, 100.f, 100.f));
+		//planets.push_back(std::make_unique<Planet>(7.f, 0.f, 1, 0.7f, 200.f, 175.f));
+		planets.push_back(std::make_unique<Planet>(14.f, 0.66f, 2, 1.f, 220.f, 250.f));
     }
 
 	bool OnUserCreate() override
 	{
+		olc::vf2d textArea = draw.GetTextSize("RESTART", false, { 2.0f, 4.0f });
+		restartButtonTextPosition = { CENTER.x - textArea.x * 0.5f, SCREENSIZE.y - textArea.y - 10.f};
+		restartButtonPosition = { restartButtonTextPosition.x - 10.f, restartButtonTextPosition.y - 10.f };
+		restartButtonSize = { textArea.x + 20.f, textArea.y + 10.f };
+
+		titleSize = draw.GetTextSize("OF THE", false, { 4.0f, 8.0f });
+		titlePosition = { CENTER.x - titleSize.x / 2.f, CENTER.y - titleSize.y * 2.f };
+
+		textArea = draw.GetTextSize("START", false, { 2.0f, 4.0f });
+		startButtonTextPosition = { CENTER.x - textArea.x * 0.5f, SCREENSIZE.y - textArea.y - 10.f };
+		startButtonPosition = { startButtonTextPosition.x - 10.f, startButtonTextPosition.y - 10.f };
+		startButtonSize = { textArea.x + 20.f, textArea.y + 10.f };
+
 		return true;
 	}
 
 	bool OnUserUpdate(float fElapsedTime) override
 	{
 		totalElapsedTime += fElapsedTime;
-		drawState(fElapsedTime);
+		if (onStartMenu) {
+			drawStartMenu();
+		} else {
+			drawState(fElapsedTime);
+		}
         return true;
     }
 
     void checkForCollisions() {
-        if (planets.empty() || planets.size() == 1) return;
-        for (auto idx = 0; idx < planets.size() - 1; idx++) {
+        if (planets.empty()) { return; }
+        for (auto idx = 0; idx < planets.size(); idx++) {
 			auto body1 = planets[idx].get();
-            for (auto idx2 = idx+1; idx2 < planets.size(); idx2++) {
-                auto body2 = planets[idx2].get();
-                if (areColliding(body1, body2)) {
-                    handleCollision(body1, body2);
-                }
+            if (areColliding(body1, &sun)) {
+                handleSunCollision(body1);
+				continue;
             }
+			for (auto& asteroidPtr : asteroids) {
+				auto asteroid = asteroidPtr.get();
+                if (areColliding(body1, asteroid)) {
+                    handleAsteroidCollision(body1, asteroid);
+					continue;
+                }
+			}
+			if (planets.size() > 1) {
+				for (auto idx2 = idx+1; idx2 < planets.size(); idx2++) {
+					auto body2 = planets[idx2].get();
+					if (areColliding(body1, body2)) {
+						handleCollision(body1, body2);
+						break;
+					}
+				}
+			}
         }
     }
 
@@ -555,9 +622,18 @@ public:
 					soundEngine.play(body->id, DRONE);
                 } else if (!inSolarFlare && currentlyActivated) {
 					body->isActivated = false;
-					soundEngine.stop(body->id);
+					if (modifiedPlanetId != body->id) {
+						soundEngine.stop(body->id);
+					}
 				}
             }
+		}
+	}
+
+	void checkAsteroidGenerator() {
+		if (timeSinceLastAsteroid > 4.f) {
+			timeSinceLastAsteroid = 0.f;
+			spawnAsteroid();
 		}
 	}
 
@@ -576,13 +652,22 @@ public:
 		olc::vf2d adjustedMousePosition = { mousePosition.x - SCREENSIZE.x / 2.f, mousePosition.y - SCREENSIZE.y / 2.f };
 
 		// User clicked on planet. Update planet to draw ellipse + play drone to preview sound.
-		if (newClick && highlightingPlanet) {
-			highlightingPlanet = false;
-			modifyingPlanet = true;
-			modifiedPlanet = highlightedPlanet;
-			soundEngine.play(modifiedPlanet->id, DRONE);
-			return;
-		} 
+		if (newClick) {
+			if (onStartMenu && rectContainsPoint(restartButtonPosition, restartButtonSize, mousePosition)) {
+				onStartMenu = false;
+			}
+			if (sun.showRestartButton && rectContainsPoint(restartButtonPosition, restartButtonSize, mousePosition)) {
+				restart();
+			}
+			if (highlightingPlanet) {
+				highlightingPlanet = false;
+				modifyingPlanet = true;
+				modifiedPlanet = highlightedPlanet;
+				modifiedPlanetId = highlightedPlanet->id;
+				soundEngine.play(modifiedPlanetId, DRONE);
+				return;
+			} 
+		}
 
 		// User is modifying a planet. Update its frequency.
 		if (mouseDown && modifyingPlanet) {
@@ -595,7 +680,8 @@ public:
 		// User stopped modifying a planet. Update planet to stop drawing ellipse + stop drone.
 		if (!mouseDown && modifyingPlanet) {
 			modifyingPlanet = false;
-			soundEngine.stop(modifiedPlanet->id);
+			soundEngine.stop(modifiedPlanetId);
+			modifiedPlanetId = -1;
 		}
 
 		// User was highlighting a planet.
@@ -649,11 +735,18 @@ public:
             auto body = bodyPtr.get();
             body->update(dt);
         }
-		// - Asteroids and planet generation
+        for (auto& asteroidPtr : asteroids) {
+            auto body = asteroidPtr.get();
+            body->update(dt);
+        }
 
 		// Collision detection
         checkForCollisions();
 		checkForSolarFlareActivations();
+		checkAsteroidGenerator();
+		timeSinceLastAsteroid += dt;
+
+		// planet generation
 
 		// Draw
 		for (auto& backgroundStar : background.starfield) {
@@ -674,20 +767,49 @@ public:
 				}
 			}
         }
-		// - Asteroids
+        for (auto& asteroidPtr : asteroids) {
+            auto asteroid = asteroidPtr.get();
+			if ((asteroid->position.x < -CENTER.x && asteroid->position.y < -CENTER.y) || (asteroid->position.x > CENTER.x && asteroid->position.y > CENTER.y)) {
+				for (auto idx = 0; idx < asteroids.size(); idx++) {
+					auto body = asteroids[idx].get();
+					if (body->id == asteroid->id) {
+						asteroids.erase(std::next(asteroids.begin(), idx));
+					}
+				}
+			} else {
+				draw.FilledCircle(asteroid->position, asteroid->radius, olc::Colour::WHITE);
+				for (auto& point : asteroid->path) {
+					draw.FilledCircle(point, TAIL_WIDTH, olc::Colour::WHITE);
+				}
+			}
+        }
 		handleExplosions(dt);
 
 		draw.WorldReset();
+
 		if (sun.showingPopup) {
 			olc::vf2d largeText = draw.GetTextSize(sun.epochName, false, { 2.0f, 4.0f });
-			draw.String({ 5,5 }, sun.epochName, olc::Colour::WHITE, { 2.0f, 4.0f });
-			draw.String({ 5,largeText.y + 5.f }, sun.epochYears, olc::Colour::WHITE, { 2.0f, 4.0f });
+			draw.String({ 5,5 }, sun.epochName, sun.popupColor, { 2.0f, 4.0f });
+			draw.String({ 5,largeText.y + 5.f }, sun.epochYears, sun.popupColor, { 2.0f, 4.0f });
 		} else if (sun.completedLifecycle) {
-			olc::vf2d largeText = draw.GetTextSize("RESTART", false, { 2.0f, 4.0f });
-			draw.String({ CENTER.x - largeText.x, SCREENSIZE.y - (largeText.y / 2.f) }, "RESTART", olc::Colour::WHITE, { 2.0f, 4.0f });
-			// TODO: It doesn't do anything yet
+			draw.Rect(restartButtonPosition, restartButtonSize, sun.popupColor);
+			draw.String(restartButtonTextPosition, "RESTART", sun.popupColor, { 2.0f, 4.0f });
 		}
+	}
 
+	void drawStartMenu() {
+        draw.Clear(olc::Colour::BLACK);
+		handleUserInput();
+		draw.String({titlePosition.x, titlePosition.y - titleSize.y}, "MUZAK", olc::Colour::WHITE, { 4.0f, 8.0f });
+		draw.String(titlePosition, "OF THE", olc::Colour::WHITE, { 4.0f, 8.0f });
+		draw.String({titlePosition.x, titlePosition.y + titleSize.y}, "SPHERES", olc::Colour::WHITE, { 4.0f, 8.0f });
+		draw.Rect(startButtonPosition, startButtonSize, olc::Colour::WHITE);
+		draw.String(startButtonTextPosition, "START", olc::Colour::WHITE, { 2.0f, 4.0f });
+	}
+
+	void restart() {
+		totalElapsedTime = 0.f;
+		sun.reinitialize();
 	}
 
 	void handleExplosions(float dt) {
@@ -729,6 +851,45 @@ public:
 		return mag2 <= (body->radius * body->radius);
 	}
 
+	float area(float x1, float y1, float x2, float y2, float x3, float y3)
+	{
+		return abs((x1 * (y2 - y3) + x2 * (y3 - y1) + 
+					x3 * (y1 - y2)) / 2.f);
+	}
+
+	bool rectContainsPoint(olc::vf2d& rectPosition, olc::vf2d rectSize, olc::vf2d point) {
+		const float x1 = rectPosition.x;
+		const float y1 = rectPosition.y;
+		const float x2 = rectPosition.x + rectSize.x;
+		const float y2 = rectPosition.y;
+		const float x3 = rectPosition.x + rectSize.x;
+		const float y3 = rectPosition.y + rectSize.y;
+		const float x4 = rectPosition.x;
+		const float y4 = rectPosition.y + rectSize.y;
+		const float x = point.x;
+		const float y = point.y;
+
+		/* Calculate area of rectangle ABCD */
+		const float A = area(x1, y1, x2, y2, x3, y3) + 
+				area(x1, y1, x4, y4, x3, y3);
+
+		/* Calculate area of triangle PAB */
+		const float A1 = area(x, y, x1, y1, x2, y2);
+
+		/* Calculate area of triangle PBC */
+		const float A2 = area(x, y, x2, y2, x3, y3);
+
+		/* Calculate area of triangle PCD */
+		const float A3 = area(x, y, x3, y3, x4, y4);
+
+		/* Calculate area of triangle PAD */
+		const float A4 = area(x, y, x1, y1, x4, y4);
+
+		/* Check if sum of A1, A2, A3 and A4 
+		is same as A */
+		return (A == A1 + A2 + A3 + A4);
+	}
+
 	void handleCollision(Body* body1, Body* body2) {
 		if (body1->radius > body2->radius) {
 			explosions.push_back(body2->position);
@@ -748,6 +909,18 @@ public:
 		}
 	}
 
+	void handleAsteroidCollision(Body* body, Body* asteroid) {
+		explosions.push_back(asteroid->position);
+		soundEngine.play(body->id, ARP);
+		removeAsteroid(asteroid->id);
+	}
+
+	void handleSunCollision(Body* body) {
+		explosions.push_back(body->position);
+		soundEngine.play(body->id, ARP);
+		removeEntity(body->id);
+	}
+
 	void removeEntity(int id) {
 		if (highlightedPlanet != NULL && highlightedPlanet->id == id) { 
 			highlightedPlanet = NULL;
@@ -762,6 +935,16 @@ public:
 			auto body = planets[idx].get();
 			if (body->id == id) {
 				planets.erase(std::next(planets.begin(), idx));
+				return;
+			}
+		}
+	}
+
+	void removeAsteroid(int id) {
+		for (auto idx = 0; idx < asteroids.size(); idx++) {
+			auto body = asteroids[idx].get();
+			if (body->id == id) {
+				asteroids.erase(std::next(asteroids.begin(), idx));
 				return;
 			}
 		}
@@ -802,6 +985,37 @@ public:
             
             vecParticles.push_back(p);
         }
+	}
+
+	void spawnAsteroid() {
+		float a = randomFloat();	// to choose side
+		int side = a < 0.25f ? 0 : a < 0.5f ? 1 : a < 0.75f ? 2 : 3;
+		// 0 = north, 1 = east, 2 = south, 3 = west
+		a = randomFloat();	// start position scalar
+		olc::vf2d startPosition;
+		if (side == 0) {
+			startPosition = { SCREENSIZE.x * a, 0.f };
+		} else if (side == 1) {
+			startPosition = { SCREENSIZE.x, SCREENSIZE.y * a };
+		} else if (side == 2) {
+			startPosition = { SCREENSIZE.x * a, SCREENSIZE.y };
+		} else {
+			startPosition = { 0.f, SCREENSIZE.y * a };
+		}
+		startPosition = { startPosition.x - CENTER.x, startPosition.y - CENTER.y };
+		a = randomFloat() * 2 + -1;	// velocity scalar
+		olc::vf2d startVelocity;
+		if (side == 0) { 
+			startVelocity = { MAX_ASTEROID_VELOCITY * a, MAX_ASTEROID_VELOCITY };
+		} else if (side == 1) { 
+			startVelocity = { -MAX_ASTEROID_VELOCITY, MAX_ASTEROID_VELOCITY * a };
+		} else if (side == 2) { 
+			startVelocity = { MAX_ASTEROID_VELOCITY * a, -MAX_ASTEROID_VELOCITY };
+		} else {
+			startVelocity = { MAX_ASTEROID_VELOCITY, MAX_ASTEROID_VELOCITY * a };
+		}
+		a = randomFloat() * 2 + -1;	// radius scalar
+		asteroids.push_back(std::make_unique<Asteroid>(a * MAX_ASTEROID_RADIUS + 4.f, startPosition, asteroidId++, startVelocity));
 	}
 };
 
