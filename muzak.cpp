@@ -10,9 +10,11 @@ static inline void pgetinker_file_resolve(const char* url, const char* mountPath
 #endif
 
 // TODO
-// Spawn planets
-// Planet interactions: Relative deformation
-// Details: Planet design; FX + shaders; refine note system
+// optimize
+// sun should play sound
+// click on sun to trigger solar flare (?)
+// Planet formation, design
+// FX + shaders
 
 // Game constants
 const olc::vf2d 	SCREENSIZE 				= { 500.f,500.f };
@@ -34,7 +36,7 @@ const float 		DELAY_IN_SECONDS 		= 0.2f;
 const float 		DECAY 					= 0.5f;
 
 float randomFloat() {
-	return rand() / static_cast<float>RAND_MAX;
+	return rand() / static_cast<float>(RAND_MAX);
 }
 
 struct SolarEpoch {
@@ -48,6 +50,7 @@ struct SolarEpoch {
 	float flareSpeed;
 	float flareBloom;
 	olc::Pixel flareColor;
+	int maxNumPlanets;
 };
 
 struct Particle
@@ -59,7 +62,6 @@ struct Particle
 };
 
 struct Body {
-public:
 	float radius;
 	olc::vf2d position;
 	int id;
@@ -69,7 +71,6 @@ public:
 };
 
 struct SolarFlare: public Body {
-public:
 	float speed;
 	float bloom; // overlayCircleRadius = radius - bloom
     olc::Pixel color;
@@ -127,14 +128,15 @@ struct Star : public Body {
 	std::string epochYears;
 	olc::Pixel popupColor = olc::Colour::WHITE;
 	bool completedLifecycle = false;
+	int maxNumPlanets = 0;
 
 	const std::vector<SolarEpoch> epochs = {
-		// 	name			age						start, 	end, 	radius, color, 					f_reg, 	f_sp, 	f_blm, 	f_color
-		{ 	"T-Tauri",		"Newborn",				0.f, 	25.f, 	12.f, 	olc::Colour::YELLOW, 	8.f, 	50.f, 	2.f, 	olc::Colour::TANGERINE },
-		{ 	"Mature",		"100 million years",	25.f, 	50.f, 	15.f, 	olc::Colour::TANGERINE, 8.f, 	75.f, 	5.f, 	olc::Colour::RED },
-		{ 	"Red Giant",	"12 billion years",		50.f, 	75.f, 	24.f, 	olc::Colour::RED, 		8.f, 	120.f, 	10.f, 	olc::Colour::DARK_RED },
-		{ 	"Nebula",		"13 billion years",		75.f, 	100.f, 	12.f, 	olc::Colour::BLUE, 		8.f, 	100.f, 	5.f, 	olc::Colour::WHITE },
-		{ 	"White dwarf",	"13.2 billion years",	100.f, 	9999.f, 6.f, 	olc::Colour::WHITE, 	8.f, 	75.f, 	1.f, 	olc::Colour::YELLOW }
+		// 	name			age						start, 	end, 	radius, color, 					f_reg, 	f_sp, 	f_blm, 	f_color					#planets
+		{ 	"T-Tauri",		"Newborn",				0.f, 	25.f, 	12.f, 	olc::Colour::YELLOW, 	8.f, 	50.f, 	2.f, 	olc::Colour::TANGERINE,	2 },
+		{ 	"Mature",		"100 million years",	25.f, 	50.f, 	15.f, 	olc::Colour::TANGERINE, 8.f, 	75.f, 	5.f, 	olc::Colour::RED, 		5 },
+		{ 	"Red Giant",	"12 billion years",		50.f, 	75.f, 	24.f, 	olc::Colour::RED, 		8.f, 	120.f, 	10.f, 	olc::Colour::DARK_RED, 	6 },
+		{ 	"Nebula",		"13 billion years",		75.f, 	100.f, 	12.f, 	olc::Colour::BLUE, 		8.f, 	100.f, 	5.f, 	olc::Colour::WHITE, 	6 },
+		{ 	"White dwarf",	"13.2 billion years",	100.f, 	9999.f, 6.f, 	olc::Colour::WHITE, 	8.f, 	75.f, 	1.f, 	olc::Colour::YELLOW, 	3 }
 	};
 
 	Star() {
@@ -148,17 +150,10 @@ struct Star : public Body {
 
 	void reinitialize() {
 		currentEpochIndex = 0;
-		transitioning = false;
-		showingPopup = false;
 		showRestartButton = false;
 		timeShowingPopup = 0.f;
 		completedLifecycle = false;
 		updateEpoch();
-		radius = targetRadius;
-		color = targetColor;
-		position = { 0.f, 0.f };
-		id = 0;
-		popupColor.a = 0;
 		transitioning= true;
 		showingPopup = true;
 	}
@@ -215,6 +210,7 @@ struct Star : public Body {
 		targetColor = newEpoch.color;
 		epochName = newEpoch.name;
 		epochYears = newEpoch.year;
+		maxNumPlanets = newEpoch.maxNumPlanets;
 	}
 
 	void stepTransition() {
@@ -258,7 +254,6 @@ struct Star : public Body {
 };
 
 struct MovingBody : public Body {
-public:
 	std::vector<olc::vf2d> path = {};
 
 	MovingBody() {}
@@ -267,7 +262,6 @@ public:
 };
 
 struct Planet : public MovingBody {
-public:
 	float phase;
 	float speed;
 	float orbitRadius;			// semi-major (x) axis length
@@ -298,9 +292,9 @@ public:
 		}
 	}
 
-	void modifyOrbit(olc::vf2d newShape, olc::vf2d offset) {
-		orbitRadius = abs(newShape.x + offset.x);
-		orbitEccentricity = abs(newShape.y + offset.y);
+	void modifyOrbit(olc::vf2d adjustedMousePosition, olc::vf2d clickStart) {
+		orbitRadius = std::min(orbitRadius + abs(adjustedMousePosition.x) - abs(clickStart.x), CENTER.x);
+		orbitEccentricity = std::min(orbitEccentricity + abs(adjustedMousePosition.y) - abs(clickStart.y), CENTER.y);
 		calculateOutline();
 	}
 
@@ -319,7 +313,6 @@ public:
 };
 
 struct Asteroid : public MovingBody {
-public:
 	olc::vf2d velocity;
 
 	Asteroid(float rad, olc::vf2d pos, int newId, olc::vf2d vel) {
@@ -349,23 +342,25 @@ struct Background {
 
 	Background() {
 		for (auto i = 0; i < 128; i++) {
-            BackgroundStar newStar = { { (randomFloat() * SCREENSIZE.x) - CENTER.x, (randomFloat() * SCREENSIZE.y) - CENTER.y }, false };
+			bool activated = i > 50;
+			if (activated) {
+				activatedStars.push_back(i);
+			}
+            BackgroundStar newStar = { { (randomFloat() * SCREENSIZE.x) - CENTER.x, (randomFloat() * SCREENSIZE.y) - CENTER.y }, activated };
 			starfield.push_back(newStar);
 		}
 	}
 
 	void update() {
 		float a = randomFloat();
-		if (a > 0.8f) {
-			auto i = static_cast<int>(randomFloat() * 127);
-			starfield[i].activated = true;
-			activatedStars.push_back(i);
-		}
-		a = randomFloat();
-		if (a > .95) {
-			auto i = static_cast<int>(randomFloat() * activatedStars.size());
+		if (a > 0.2f) {
+			auto a = randomFloat();
+			auto i = static_cast<int>(a * activatedStars.size());
 			starfield[activatedStars[i]].activated = false;
 			activatedStars.erase(std::next(activatedStars.begin(), i));
+			i = static_cast<int>((1.f - a) * 127);
+			starfield[i].activated = true;
+			activatedStars.push_back(i);
 		}
 	}
 };
@@ -412,7 +407,7 @@ struct MainSoundComponent {
         ma_node_set_output_bus_volume(&lowPass, 0, LPF_BIAS);
 
 		// Set up each instrument
-		for (auto i = 0; i < 10; i++) {
+		for (auto i = 0; i < 10; i++) {	// TODO: max_num planets + sun? sun should play sound
 			synths.push_back(std::make_unique<PlanetSoundComponent>(i));
 			auto synth = synths[i].get();
 
@@ -512,7 +507,7 @@ public:
     std::vector<std::unique_ptr<SolarFlare>> flares;
 	std::vector<olc::vf2d> explosions;
 	std::vector<Particle> vecParticles;
-
+	std::vector<int> planetsToSpawn = { 0, 1, 2, 3, 4, 5 };
 	bool mouseHeld = false;
 
 	bool highlightingPlanet = false;
@@ -522,11 +517,15 @@ public:
 	Planet* modifiedPlanet = NULL;
 	int modifiedPlanetId = -1;
 	olc::vf2d clickOffset;
+	olc::vf2d clickStart;
 
 	float timeSinceLastAsteroid = 0.f;
 	int asteroidId = 0;
 	const float MAX_ASTEROID_VELOCITY = 60.f;
 	const float MAX_ASTEROID_RADIUS = 4.f;
+
+	float timeSinceLastSpawnedPlanet = 0.f;
+	const float MIN_PLANET_SIZE = 10.f;
 
 	Background background = Background();
 	MainSoundComponent soundEngine = MainSoundComponent();
@@ -545,9 +544,6 @@ public:
     MuzakOfTheSpheres()
     {
         sAppName = "Muzak of the Spheres";
-		//planets.push_back(std::make_unique<Planet>(15.f, 0.3f, 0, 1.3f, 100.f, 100.f));
-		//planets.push_back(std::make_unique<Planet>(7.f, 0.f, 1, 0.7f, 200.f, 175.f));
-		planets.push_back(std::make_unique<Planet>(14.f, 0.66f, 2, 1.f, 220.f, 250.f));
     }
 
 	bool OnUserCreate() override
@@ -564,6 +560,9 @@ public:
 		startButtonTextPosition = { CENTER.x - textArea.x * 0.5f, SCREENSIZE.y - textArea.y - 10.f };
 		startButtonPosition = { startButtonTextPosition.x - 10.f, startButtonTextPosition.y - 10.f };
 		startButtonSize = { textArea.x + 20.f, textArea.y + 10.f };
+
+		spawnPlanet();
+		spawnPlanet();
 
 		return true;
 	}
@@ -650,9 +649,10 @@ public:
 		mouseHeld = mouseDown;
 		olc::vf2d mousePosition = mouse.GetPosition().round();
 		olc::vf2d adjustedMousePosition = { mousePosition.x - SCREENSIZE.x / 2.f, mousePosition.y - SCREENSIZE.y / 2.f };
-
+	
 		// User clicked on planet. Update planet to draw ellipse + play drone to preview sound.
 		if (newClick) {
+			clickStart = adjustedMousePosition;
 			if (onStartMenu && rectContainsPoint(restartButtonPosition, restartButtonSize, mousePosition)) {
 				onStartMenu = false;
 			}
@@ -671,7 +671,8 @@ public:
 
 		// User is modifying a planet. Update its frequency.
 		if (mouseDown && modifyingPlanet) {
-			modifiedPlanet->modifyOrbit(adjustedMousePosition, clickOffset);
+			modifiedPlanet->modifyOrbit(adjustedMousePosition, clickStart);
+			clickStart = adjustedMousePosition;
 			auto frequencyInput = (modifiedPlanet->orbitRadius * modifiedPlanet->orbitEccentricity) / (SCREENSIZE.x * SCREENSIZE.y / 4.f);
 			soundEngine.updateFrequency(modifiedPlanet->id, frequencyInput);
 			return;
@@ -747,6 +748,8 @@ public:
 		timeSinceLastAsteroid += dt;
 
 		// planet generation
+		timeSinceLastSpawnedPlanet += dt;
+		shouldSpawnPlanet();
 
 		// Draw
 		for (auto& backgroundStar : background.starfield) {
@@ -800,9 +803,37 @@ public:
 	void drawStartMenu() {
         draw.Clear(olc::Colour::BLACK);
 		handleUserInput();
+		background.update();
+
+		draw.WorldOffset(CENTER);
+		for (auto& backgroundStar : background.starfield) {
+            draw.FilledCircle(backgroundStar.position, backgroundStar.activated ? 0.4f : 0.2f, olc::Colour::WHITE);
+		}
+		draw.WorldReset();
+
+		// Shadow
+		olc::Pixel shadowColor = olc::Colour::RED;
+		shadowColor.a = 125;
+		draw.String({titlePosition.x + 8.f, titlePosition.y - titleSize.y + 8.f}, "MUZAK", shadowColor, { 4.0f, 8.0f });
+		draw.String({titlePosition.x + 8.f, titlePosition.y + 8.f}, "OF THE", shadowColor, { 4.0f, 8.0f });
+		draw.String({titlePosition.x + 8.f, titlePosition.y + titleSize.y + 8.f}, "SPHERES", shadowColor, { 4.0f, 8.0f });
+		shadowColor = olc::Colour::BLUE;
+		shadowColor.a = 125;
+		draw.String({titlePosition.x - 8.f, titlePosition.y - titleSize.y + 8.f}, "MUZAK", shadowColor, { 4.0f, 8.0f });
+		draw.String({titlePosition.x - 8.f, titlePosition.y + 8.f}, "OF THE", shadowColor, { 4.0f, 8.0f });
+		draw.String({titlePosition.x - 8.f, titlePosition.y + titleSize.y + 8.f}, "SPHERES", shadowColor, { 4.0f, 8.0f });
+		shadowColor = olc::Colour::GREEN;
+		shadowColor.a = 125;
+		draw.String({titlePosition.x, titlePosition.y - titleSize.y - 8.f}, "MUZAK", shadowColor, { 4.0f, 8.0f });
+		draw.String({titlePosition.x, titlePosition.y - 8.f}, "OF THE", shadowColor, { 4.0f, 8.0f });
+		draw.String({titlePosition.x, titlePosition.y + titleSize.y - 8.f}, "SPHERES", shadowColor, { 4.0f, 8.0f });
+
+		// Main title
 		draw.String({titlePosition.x, titlePosition.y - titleSize.y}, "MUZAK", olc::Colour::WHITE, { 4.0f, 8.0f });
 		draw.String(titlePosition, "OF THE", olc::Colour::WHITE, { 4.0f, 8.0f });
 		draw.String({titlePosition.x, titlePosition.y + titleSize.y}, "SPHERES", olc::Colour::WHITE, { 4.0f, 8.0f });
+		
+		// Start button
 		draw.Rect(startButtonPosition, startButtonSize, olc::Colour::WHITE);
 		draw.String(startButtonTextPosition, "START", olc::Colour::WHITE, { 2.0f, 4.0f });
 	}
@@ -972,7 +1003,8 @@ public:
 		{
 			olc::Pixel color = colors[i];
 			float angle = randomFloat() * 2.0f * 3.14f;
-            float speed = 5.0f + randomFloat();
+			float a = randomFloat();	// for speed scalar and lifespan
+            float speed = 3.0f * (1.f + a);
             
             Particle p;
             p.position = pos;
@@ -981,7 +1013,7 @@ public:
 				std::sin(angle) * speed
 			};
             p.color = color;
-            p.life = 1.0f + randomFloat();
+            p.life = 3.0f * (1.f - a);
             
             vecParticles.push_back(p);
         }
@@ -1014,8 +1046,30 @@ public:
 		} else {
 			startVelocity = { MAX_ASTEROID_VELOCITY, MAX_ASTEROID_VELOCITY * a };
 		}
-		a = randomFloat() * 2 + -1;	// radius scalar
+		a = randomFloat();	// radius scalar
 		asteroids.push_back(std::make_unique<Asteroid>(a * MAX_ASTEROID_RADIUS + 4.f, startPosition, asteroidId++, startVelocity));
+	}
+
+	void shouldSpawnPlanet() {
+		if (
+			timeSinceLastSpawnedPlanet > 5.f &&
+			!planetsToSpawn.empty() &&
+			planetsToSpawn.size() < sun.maxNumPlanets
+		) {
+			timeSinceLastSpawnedPlanet = 0.f;
+			spawnPlanet();
+		}
+	}
+
+	void spawnPlanet() {
+		const float a = randomFloat();	// Select planet && startPhase
+		const int selectedPlanetIdx = static_cast<int>(a * (planetsToSpawn.size() - 1));
+		const int planetIdx = planetsToSpawn[selectedPlanetIdx];
+		planetsToSpawn.erase(std::next(planetsToSpawn.begin(), selectedPlanetIdx));
+		const float diff = (4.f - static_cast<float>(abs(3 - planetIdx))) * 2.f; // Larger planets in middle of system
+		const float orbit = static_cast<float>(planetIdx) / 6.f * (CENTER.y * 0.9f) + sun.radius;
+		planets.push_back(std::make_unique<Planet>(MIN_PLANET_SIZE + diff, a, planetIdx, 1.f + randomFloat(), orbit, orbit));
+		soundEngine.updateFrequency(planetIdx, orbit * orbit);
 	}
 };
 
