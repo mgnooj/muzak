@@ -9,10 +9,8 @@
 static inline void pgetinker_file_resolve(const char* url, const char* mountPath) {}
 #endif
 
-// TODO
-// Audio stops
-// Optimize
-// FX + shaders
+// optimize + tweak
+// different note sets for epochs? more notes? different elements?
 
 // Game constants
 const olc::vf2d 	SCREENSIZE 				= { 500.f,500.f };
@@ -266,7 +264,7 @@ struct Planet : public MovingBody {
 	float orbitEccentricity;	// semi-minor (y) axis length
 	std::vector<olc::vf2d> orbitOutline;
 	bool isHighlighted = false;
-	bool isActivated = false;
+	std::vector<int> activeSolarFlares = {};
 
 	Planet(float rad, float startPhase, int newId, float sp, float orbRad, float orbEcc, olc::Pixel shade) {
 		radius = rad;
@@ -277,6 +275,7 @@ struct Planet : public MovingBody {
 		orbitRadius = orbRad;
 		orbitEccentricity = orbEcc;
 		color = shade;
+		update(0.f);
 		calculateOutline();
 	}
 
@@ -339,10 +338,11 @@ struct BackgroundStar {
 struct Background {
 	std::vector<BackgroundStar> starfield;
 	std::vector<int> activatedStars;
+	int lastUpdate = 0;
 
 	Background() {
 		for (auto i = 0; i < 128; i++) {
-			bool activated = i > 50;
+			bool activated = i > 80;
 			if (activated) {
 				activatedStars.push_back(i);
 			}
@@ -352,10 +352,11 @@ struct Background {
 	}
 
 	void update() {
-		float a = randomFloat();
-		if (a > 0.2f) {
+		lastUpdate += 1;
+		if (lastUpdate > 60) {
+			lastUpdate = 0;
 			auto a = randomFloat();
-			auto i = static_cast<int>(a * activatedStars.size());
+			auto i = static_cast<int>(a * (activatedStars.size() - 1));
 			starfield[activatedStars[i]].activated = false;
 			activatedStars.erase(std::next(activatedStars.begin(), i));
 			i = static_cast<int>((1.f - a) * 127);
@@ -523,6 +524,7 @@ public:
 	int asteroidId = 0;
 	const float MAX_ASTEROID_VELOCITY = 60.f;
 	const float MAX_ASTEROID_RADIUS = 4.f;
+	int flareId = 0;
 
 	float timeSinceLastSpawnedPlanet = 0.f;
 	const float MIN_PLANET_SIZE = 10.f;
@@ -543,6 +545,21 @@ public:
 	olc::vf2d startButtonTextPosition;
 
 	bool onStartMenu = true;
+
+	const std::vector<olc::Pixel> colors = {
+		olc::Colour::RED,
+		olc::Colour::YELLOW,
+		olc::Colour::TANGERINE,
+		olc::Colour::MAGENTA,
+		olc::Colour::GREEN,
+		olc::Colour::CYAN,
+		olc::Colour::BLUE,
+		olc::Colour::GREY,
+		olc::Colour::DARK_YELLOW,
+		olc::Colour::DARK_GREEN,
+		olc::Colour::DARK_BLUE,
+		olc::Colour::WHITE
+	};
 
     MuzakOfTheSpheres()
     {
@@ -608,22 +625,25 @@ public:
         }
     }
 
-	void checkForSolarFlareActivations() {
+	void checkForSolarFlareActivations(float dt) {
         for (auto idx = 0; idx < flares.size(); idx++) {
 			auto flare = flares[idx].get();
+			flare->update(dt);
 			if (flare->exceedsScreen()) {
 				flares.erase(std::next(flares.begin(), idx));
 				continue;
 			}
+            draw.FilledCircle(flare->position, flare->radius, flare->color);
+			draw.FilledCircle(flare->position, flare->radius - flare->bloom, flare->bloomColor);
             for (auto idx2 = 0; idx2 < planets.size(); idx2++) {
                 auto body = planets[idx2].get();
-				auto currentlyActivated = body->isActivated;
+				auto currentlyActivated = containsInt(body->activeSolarFlares, flare->id);
 				auto inSolarFlare = isInSolarFlare(flare, body);
                 if (inSolarFlare && !currentlyActivated) {
-					body->isActivated = true;
-					soundEngine.play(body->id, DRONE);
+					body->activeSolarFlares.push_back(flare->id);
+					soundEngine.play(body->id, DRONE); 
                 } else if (!inSolarFlare && currentlyActivated) {
-					body->isActivated = false;
+					removeFlare(body, flare->id);
 					if (modifiedPlanetId != body->id) {
 						soundEngine.stop(body->id);
 					}
@@ -729,13 +749,11 @@ public:
 
 		// Simulate
 		background.update();
-        for (auto& flarePtr : flares) {
-            auto flare = flarePtr.get();
-            flare->update(dt);
-        }
 		sun.update(dt, totalElapsedTime);
 		if (sun.shouldFlare) {
-			flares.push_back(std::make_unique<SolarFlare>(sun.radius, sun.id, sun.flareSpeed, sun.flareBloom, sun.flareColor));
+			flares.push_back(std::make_unique<SolarFlare>(sun.radius, flareId++, sun.flareSpeed, sun.flareBloom, sun.flareColor));
+			if (flareId > 1000)
+				flareId = 0;
 			soundEngine.play(0, ARP);
 			sun.shouldFlare = false;
 		}
@@ -750,7 +768,7 @@ public:
 
 		// Collision detection
         checkForCollisions();
-		checkForSolarFlareActivations();
+		checkForSolarFlareActivations(dt);
 		checkAsteroidGenerator();
 		timeSinceLastAsteroid += dt;
 
@@ -767,18 +785,13 @@ public:
 		for (auto& backgroundStar : background.starfield) {
             draw.FilledCircle(backgroundStar.position, backgroundStar.activated ? 0.4f : 0.2f, olc::Colour::WHITE);
 		}
-        for (auto& flarePtr : flares) {
-            auto flare = flarePtr.get();
-            draw.FilledCircle(flare->position, flare->radius, flare->color);
-			draw.FilledCircle(flare->position, flare->radius - flare->bloom, flare->bloomColor);
-        }
         draw.FilledCircle({0.f, 0.f}, sun.radius, sun.color);
         for (auto& bodyPtr : planets) {
             auto body = bodyPtr.get();
             draw.FilledCircle(body->position, body->radius, body->color);
 			if (body->isHighlighted) {
 				for (auto& point : body->orbitOutline) {
-					draw.FilledCircle(point, 2.f, body->color);
+					draw.FilledCircle(point, 1.f, body->color);
 				}
 			}
         }
@@ -885,6 +898,13 @@ public:
 	bool contains(Body* body1, Body* body2)
 	{
 		return (std::sqrt(std::pow(body2->position.x - body1->position.x, 2) + std::pow(body2->position.y - body1->position.y, 2)) + body2->radius) <= body1->radius;
+	}
+
+	bool containsInt(std::vector<int> container, int target) {
+		for (auto& i : container) {
+			if (i == target) { return true; }
+		}
+		return false;
 	}
 
 	bool isClicked(Body* body, olc::vf2d point)
@@ -994,20 +1014,15 @@ public:
 		}
 	}
 
-	const std::vector<olc::Pixel> colors = {
-		olc::Colour::RED,
-		olc::Colour::YELLOW,
-		olc::Colour::TANGERINE,
-		olc::Colour::MAGENTA,
-		olc::Colour::GREEN,
-		olc::Colour::CYAN,
-		olc::Colour::BLUE,
-		olc::Colour::GREY,
-		olc::Colour::DARK_YELLOW,
-		olc::Colour::DARK_GREEN,
-		olc::Colour::DARK_BLUE,
-		olc::Colour::WHITE
-	};
+	void removeFlare(Planet* body, int flareId) {
+		for (auto idx = 0; idx < body->activeSolarFlares.size(); idx++) {
+			auto targetFlareId = body->activeSolarFlares[idx];
+			if (targetFlareId == flareId) {
+				body->activeSolarFlares.erase(std::next(body->activeSolarFlares.begin(), idx));
+				return;
+			}
+		}
+	}
 
 	void spawnExplosionParticles(olc::vf2d pos)
 	{
@@ -1061,6 +1076,8 @@ public:
 		}
 		a = randomFloat();	// radius scalar
 		asteroids.push_back(std::make_unique<Asteroid>(a * MAX_ASTEROID_RADIUS + 4.f, startPosition, asteroidId++, startVelocity));
+		if (asteroidId > 1000)
+			flareId = 0;
 	}
 
 	void shouldSpawnPlanet() {
@@ -1087,7 +1104,8 @@ public:
 		spawnColor = olc::Colour::BLACK;
 		planetToSpawn = { MIN_PLANET_SIZE + diff, a, planetIdx, 1.f + b, orbit, orbit, color };
 		spawningPlanet = true;
-		soundEngine.updateFrequency(planetIdx, orbit * orbit);
+		auto frequencyInput = (orbit * orbit) / (SCREENSIZE.x * SCREENSIZE.y / 4.f);
+		soundEngine.updateFrequency(planetIdx, frequencyInput);
 	}
 
 	void stepPlanetFormation() {
