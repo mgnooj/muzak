@@ -9,9 +9,6 @@
 static inline void pgetinker_file_resolve(const char* url, const char* mountPath) {}
 #endif
 
-// optimize + tweak
-// different note sets for epochs? more notes? different elements?
-
 // Game constants
 const olc::vf2d 	SCREENSIZE 				= { 500.f,500.f };
 const olc::vf2d 	CENTER 					= { SCREENSIZE.x / 2.f, SCREENSIZE.y / 2.f };
@@ -56,9 +53,154 @@ void changeColor(olc::Pixel& color, olc::Pixel& targetColor) {
 	}
 }
 
+enum SoundComponentTarget {
+	DRONE, ARP
+};
+
+struct PlanetSoundComponent {
+	int id;
+
+	ma_waveform 			drone;			// Sine
+	ma_waveform 			arp;			// Square
+    ma_data_source_node  	droneNode;
+    ma_data_source_node  	arpNode;
+	ma_delay_node    		delay;
+
+	PlanetSoundComponent(int newId) {
+		id = newId;
+	}
+};
+
+struct MainSoundComponent {
+	inline static ma_node_graph    										nodeGraph;
+	inline static ma_lpf_node      										lowPass;
+    inline static ma_device 											device;
+	inline static std::vector<std::unique_ptr<PlanetSoundComponent>> 	synths;
+	inline static std::vector<int> arpsToPlay = {};
+	
+	MainSoundComponent() {
+		// node graph
+    	ma_result result;
+        ma_node_graph_config nodeGraphConfig = ma_node_graph_config_init(CHANNELS);
+    	if (ma_node_graph_init(&nodeGraphConfig, NULL, &nodeGraph) && !MA_SUCCESS) {
+			printf("Failed to initialize nodegraph.\n");
+		}
+
+		// LPF
+        ma_lpf_node_config lpfNodeConfig = ma_lpf_node_config_init(CHANNELS, SAMPLE_RATE, SAMPLE_RATE_FLOAT / LPF_CUTOFF_FACTOR, LPF_ORDER);
+       	if (ma_lpf_node_init(&nodeGraph, &lpfNodeConfig, NULL, &lowPass) && !MA_SUCCESS) {
+			printf("Failed to initialize LPF.\n");
+		}
+        ma_node_attach_output_bus(&lowPass, 0, ma_node_graph_get_endpoint(&nodeGraph), 0);
+        ma_node_set_output_bus_volume(&lowPass, 0, LPF_BIAS);
+
+		// Set up each instrument
+		for (auto i = 0; i < 7; i++) {	// max_num planets + sun sun should play sound
+			synths.push_back(std::make_unique<PlanetSoundComponent>(i));
+			auto synth = synths[i].get();
+
+			// Delay
+			ma_delay_node_config delayNodeConfig = ma_delay_node_config_init(CHANNELS, SAMPLE_RATE, (ma_uint32)(SAMPLE_RATE * DELAY_IN_SECONDS), DECAY);
+			ma_delay_node_init(&nodeGraph, &delayNodeConfig, NULL, &synth->delay);
+			ma_node_attach_output_bus(&synth->delay, 0, &lowPass, 0);
+
+			// Synths
+			ma_waveform_config droneConfig = ma_waveform_config_init(FORMAT, CHANNELS, SAMPLE_RATE, ma_waveform_type_sine, 0.0, 110);
+			ma_waveform_init(&droneConfig, &synth->drone);
+			ma_data_source_node_config droneNodeConfig = ma_data_source_node_config_init(&synth->drone);
+			ma_data_source_node_init(&nodeGraph, &droneNodeConfig, NULL, &synth->droneNode);
+			ma_node_attach_output_bus(&synth->droneNode, 0, &synth->delay, 0);
+
+			ma_waveform_config arpConfig = ma_waveform_config_init(ma_format_f32, CHANNELS, SAMPLE_RATE, ma_waveform_type_triangle, 0.0, 110);
+			ma_waveform_init(&arpConfig, &synth->arp);
+			ma_data_source_node_config arpNodeConfig = ma_data_source_node_config_init(&synth->arp);
+			ma_data_source_node_init(&nodeGraph, &arpNodeConfig, NULL, &synth->arpNode);
+			ma_node_attach_output_bus(&synth->arpNode, 0, &synth->delay, 0);
+		}
+
+        ma_device_config deviceConfig;
+        deviceConfig = ma_device_config_init(ma_device_type_playback);
+        deviceConfig.playback.format   = FORMAT;
+        deviceConfig.playback.channels = CHANNELS;
+        deviceConfig.sampleRate        = SAMPLE_RATE;
+        deviceConfig.dataCallback      = data_callback;
+        deviceConfig.pUserData         = &nodeGraph;
+
+		if (ma_device_init(NULL, &deviceConfig, &device) != MA_SUCCESS) {
+			printf("Failed to open playback device.\n");
+		}
+
+		if (ma_device_start(&device) != MA_SUCCESS) {
+			printf("Failed to start playback device.\n");
+			ma_device_uninit(&device);
+		}
+	}
+
+	~MainSoundComponent() {
+        ma_device_uninit(&device);
+	}
+
+	static void data_callback(ma_device* pDevice, void* pOutput, const void* pInput, ma_uint32 frameCount)
+	{
+		ma_node_graph_read_pcm_frames(&nodeGraph, pOutput, frameCount, NULL);
+		for (auto synthIndex : arpsToPlay) {
+			auto synth = synths[synthIndex].get();
+			ma_waveform_set_amplitude(&synth->arp, 0.0);
+		}
+		arpsToPlay.clear();
+		(void)pInput;   /* Unused. */
+		(void)pDevice;  /* Unused. */
+	}
+
+	const std::vector<double> A_MAJOR = { 440.0, 493.88, 554.37, 587.33, 659.25, 739.99, 830.61, 880.0 };
+	const std::vector<double> F_SHARP_MINOR = { 370.0, 415.30, 440.0, 493.88, 554.37, 587.33, 659.25, 739.99 };
+	std::vector<double> notes = A_MAJOR;
+
+	void updateFrequency(int synthIndex, float input) {
+		auto noteIdx = static_cast<int>(input * (notes.size() - 1));
+		auto frequency = notes[noteIdx];
+		auto synth = synths[synthIndex].get();
+		ma_waveform_set_frequency(&synth->drone, frequency / 2.0);
+		ma_waveform_set_frequency(&synth->arp, frequency);
+	}
+
+	void updateStarFrequency() {
+		auto synth = synths[0].get();
+		ma_waveform_set_frequency(&synth->drone, notes[0] / 4.0);
+		ma_waveform_set_frequency(&synth->arp, notes[0] / 2.0);
+	}
+
+	void updateAmplitude(int synthIndex, float amplitude) {
+		auto synth = synths[synthIndex].get();
+		ma_waveform_set_amplitude(&synth->drone, (double)amplitude);
+		ma_waveform_set_amplitude(&synth->arp, (double)amplitude);
+	}
+	void play(int synthIndex, SoundComponentTarget sound) { 
+		auto synth = synths[synthIndex].get();
+		if (sound == DRONE) {
+			ma_waveform_set_amplitude(&synth->drone, 0.1);
+		} else {
+			arpsToPlay.push_back(synthIndex);
+			ma_waveform_set_amplitude(&synth->arp, 0.2);
+		}
+	}
+	void stop(int synthIndex) {
+		auto synth = synths[synthIndex].get();
+		ma_waveform_set_amplitude(&synth->drone, 0.0);
+	}
+	void updateDelay(int synthIndex, double value) {}
+	void updateFeedback(int synthIndex, double value) {}
+	void updateCutoff(double value) {}
+};
+
+enum Scale {
+	Major, Minor
+};
+
 struct SolarEpoch {
 	std::string name;
 	std::string year;
+	Scale key;
 	float start;
 	float end;
 	float radius;
@@ -146,17 +288,18 @@ struct Star : public Body {
 	olc::Pixel popupColor = olc::Colour::WHITE;
 	bool completedLifecycle = false;
 	int maxNumPlanets = 0;
+	MainSoundComponent& soundEngine;
 
 	const std::vector<SolarEpoch> epochs = {
-		// 	name			age						start, 	end, 	radius, color, 					f_reg, 	f_sp, 	f_blm, 	f_color					#planets
-		{ 	"T-Tauri",		"Newborn",				0.f, 	25.f, 	12.f, 	olc::Colour::YELLOW, 	8.f, 	50.f, 	2.f, 	olc::Colour::TANGERINE,	2 },
-		{ 	"Mature",		"100 million years",	25.f, 	50.f, 	15.f, 	olc::Colour::TANGERINE, 8.f, 	75.f, 	15.f, 	olc::Colour::RED, 		4 },
-		{ 	"Red Giant",	"12 billion years",		50.f, 	75.f, 	24.f, 	olc::Colour::RED, 		8.f, 	120.f, 	8.f, 	olc::Colour::DARK_RED, 	6 },
-		{ 	"Nebula",		"13 billion years",		75.f, 	100.f, 	12.f, 	olc::Colour::BLUE, 		8.f, 	100.f, 	5.f, 	olc::Colour::WHITE, 	6 },
-		{ 	"White dwarf",	"13.2 billion years",	100.f, 	9999.f, 6.f, 	olc::Colour::WHITE, 	8.f, 	75.f, 	2.f, 	olc::Colour::YELLOW, 	3 }
+		// 	name			age						key		start, 	end, 	radius, color, 					f_reg, 	f_sp, 	f_blm, 	f_color					#planets
+		{ 	"T-Tauri",		"Newborn",				Major,	0.f, 	25.f, 	24.f, 	olc::Colour::YELLOW, 	8.f, 	50.f, 	30.f, 	olc::Colour::TANGERINE,	2 },
+		{ 	"Mature",		"100 million years",	Major,	25.f, 	70.f, 	35.f, 	olc::Colour::TANGERINE, 5.f, 	75.f, 	10.f, 	olc::Colour::RED, 		4 },
+		{ 	"Red Giant",	"12 billion years",		Minor,	70.f, 	100.f, 	70.f, 	olc::Colour::RED, 		3.f, 	120.f, 	20.f, 	olc::Colour::DARK_RED, 	6 },
+		{ 	"Nebula",		"13 billion years",		Minor,	100.f, 	120.f, 	50.f, 	olc::Colour::BLUE, 		1.f, 	150.f, 	5.f, 	olc::Colour::WHITE, 	6 },
+		{ 	"White dwarf",	"13.2 billion years",	Major,	120.f, 	9999.f, 12.f, 	olc::Colour::WHITE, 	8.f, 	150.f, 	2.f, 	olc::Colour::YELLOW, 	3 }
 	};
 
-	Star() {
+	Star(MainSoundComponent& s) : soundEngine(s) {
 		updateEpoch();
 		radius = targetRadius;
 		color = targetColor;
@@ -216,9 +359,11 @@ struct Star : public Body {
 	}
 
 	void updateEpoch() {
-		auto newEpoch = epochs[currentEpochIndex];
+		auto& newEpoch = epochs[currentEpochIndex];
 		currentEpochStart = newEpoch.start;
 		currentEpochEnd = newEpoch.end;
+		soundEngine.notes = newEpoch.key == Major ? soundEngine.A_MAJOR : soundEngine.F_SHARP_MINOR;
+		soundEngine.updateStarFrequency();
 		flareRegularity = newEpoch.flareRegularity;
 		flareSpeed = newEpoch.flareSpeed;
 		flareBloom = newEpoch.flareBloom;
@@ -366,143 +511,12 @@ struct Background {
 	}
 };
 
-enum SoundComponentTarget {
-	DRONE, ARP
-};
-
-struct PlanetSoundComponent {
-	int id;
-
-	ma_waveform 			drone;			// Sine
-	ma_waveform 			arp;			// Square
-    ma_data_source_node  	droneNode;
-    ma_data_source_node  	arpNode;
-	ma_delay_node    		delay;
-
-	PlanetSoundComponent(int newId) {
-		id = newId;
-	}
-};
-
-struct MainSoundComponent {
-	inline static ma_node_graph    										nodeGraph;
-	inline static ma_lpf_node      										lowPass;
-    inline static ma_device 											device;
-	inline static std::vector<std::unique_ptr<PlanetSoundComponent>> 	synths;
-	inline static std::vector<int> arpsToPlay = {};
-	
-	MainSoundComponent() {
-		// Set up node graph
-    	ma_result result;
-        ma_node_graph_config nodeGraphConfig = ma_node_graph_config_init(CHANNELS);
-    	if (ma_node_graph_init(&nodeGraphConfig, NULL, &nodeGraph) && !MA_SUCCESS) {
-			printf("Failed to initialize nodegraph.\n");
-		}
-
-		// Set up LPF
-        ma_lpf_node_config lpfNodeConfig = ma_lpf_node_config_init(CHANNELS, SAMPLE_RATE, SAMPLE_RATE_FLOAT / LPF_CUTOFF_FACTOR, LPF_ORDER);
-       	if (ma_lpf_node_init(&nodeGraph, &lpfNodeConfig, NULL, &lowPass) && !MA_SUCCESS) {
-			printf("Failed to initialize LPF.\n");
-		}
-        ma_node_attach_output_bus(&lowPass, 0, ma_node_graph_get_endpoint(&nodeGraph), 0);
-        ma_node_set_output_bus_volume(&lowPass, 0, LPF_BIAS);
-
-		// Set up each instrument
-		for (auto i = 0; i < 7; i++) {	// max_num planets + sun sun should play sound
-			synths.push_back(std::make_unique<PlanetSoundComponent>(i));
-			auto synth = synths[i].get();
-
-			// Delay
-			ma_delay_node_config delayNodeConfig = ma_delay_node_config_init(CHANNELS, SAMPLE_RATE, (ma_uint32)(SAMPLE_RATE * DELAY_IN_SECONDS), DECAY);
-			ma_delay_node_init(&nodeGraph, &delayNodeConfig, NULL, &synth->delay);
-			ma_node_attach_output_bus(&synth->delay, 0, &lowPass, 0);
-
-			// Synths
-			ma_waveform_config droneConfig = ma_waveform_config_init(FORMAT, CHANNELS, SAMPLE_RATE, ma_waveform_type_sine, 0.0, 110);
-			ma_waveform_init(&droneConfig, &synth->drone);
-			ma_data_source_node_config droneNodeConfig = ma_data_source_node_config_init(&synth->drone);
-			ma_data_source_node_init(&nodeGraph, &droneNodeConfig, NULL, &synth->droneNode);
-			ma_node_attach_output_bus(&synth->droneNode, 0, &synth->delay, 0);
-
-			ma_waveform_config arpConfig = ma_waveform_config_init(ma_format_f32, CHANNELS, SAMPLE_RATE, ma_waveform_type_triangle, 0.0, 110);
-			ma_waveform_init(&arpConfig, &synth->arp);
-			ma_data_source_node_config arpNodeConfig = ma_data_source_node_config_init(&synth->arp);
-			ma_data_source_node_init(&nodeGraph, &arpNodeConfig, NULL, &synth->arpNode);
-			ma_node_attach_output_bus(&synth->arpNode, 0, &synth->delay, 0);
-		}
-
-        ma_device_config deviceConfig;
-        deviceConfig = ma_device_config_init(ma_device_type_playback);
-        deviceConfig.playback.format   = FORMAT;
-        deviceConfig.playback.channels = CHANNELS;
-        deviceConfig.sampleRate        = SAMPLE_RATE;
-        deviceConfig.dataCallback      = data_callback;
-        deviceConfig.pUserData         = &nodeGraph;
-
-		if (ma_device_init(NULL, &deviceConfig, &device) != MA_SUCCESS) {
-			printf("Failed to open playback device.\n");
-		}
-
-		if (ma_device_start(&device) != MA_SUCCESS) {
-			printf("Failed to start playback device.\n");
-			ma_device_uninit(&device);
-		}
-	}
-
-	~MainSoundComponent() {
-        ma_device_uninit(&device);
-	}
-
-	static void data_callback(ma_device* pDevice, void* pOutput, const void* pInput, ma_uint32 frameCount)
-	{
-		ma_node_graph_read_pcm_frames(&nodeGraph, pOutput, frameCount, NULL);
-		for (auto synthIndex : arpsToPlay) {
-			auto synth = synths[synthIndex].get();
-			ma_waveform_set_amplitude(&synth->arp, 0.0);
-		}
-		arpsToPlay.clear();
-		(void)pInput;   /* Unused. */
-		(void)pDevice;  /* Unused. */
-	}
-
-	// A=440 Hz, B=493.88 Hz, C#=554.37 Hz, D=587.33 Hz, E=659.25 Hz, F#=739.99 Hz, and G#=830.61
-	const std::vector<double> notes = { 440.0, 493.88, 554.37, 587.33, 659.25, 739.99, 830.61, 880.0 };
-
-	void updateFrequency(int synthIndex, float input) {
-		auto noteIdx = static_cast<int>(input * (notes.size() - 1));
-		auto frequency = notes[noteIdx];
-		auto synth = synths[synthIndex].get();
-		ma_waveform_set_frequency(&synth->drone, frequency / 2.0);
-		ma_waveform_set_frequency(&synth->arp, frequency);
-	}
-	void updateAmplitude(int synthIndex, float amplitude) {
-		auto synth = synths[synthIndex].get();
-		ma_waveform_set_amplitude(&synth->drone, (double)amplitude);
-		ma_waveform_set_amplitude(&synth->arp, (double)amplitude);
-	}
-	void play(int synthIndex, SoundComponentTarget sound) { 
-		auto synth = synths[synthIndex].get();
-		if (sound == DRONE) {
-			ma_waveform_set_amplitude(&synth->drone, 0.1);
-		} else {
-			arpsToPlay.push_back(synthIndex);
-			ma_waveform_set_amplitude(&synth->arp, 0.2);
-		}
-	}
-	void stop(int synthIndex) {
-		auto synth = synths[synthIndex].get();
-		ma_waveform_set_amplitude(&synth->drone, 0.0);
-	}
-	void updateDelay(int synthIndex, double value) {}
-	void updateFeedback(int synthIndex, double value) {}
-	void updateCutoff(double value) {}
-};
-
 class MuzakOfTheSpheres : public olc::PixelGameEngine
 {
 public:
+	MainSoundComponent soundEngine = MainSoundComponent();
     float totalElapsedTime = 0.f;
-    Star sun;
+    Star sun = Star(soundEngine);
     std::vector<std::unique_ptr<Planet>> planets;
     std::vector<std::unique_ptr<Asteroid>> asteroids;
     std::vector<std::unique_ptr<SolarFlare>> flares;
@@ -522,18 +536,17 @@ public:
 
 	float timeSinceLastAsteroid = 0.f;
 	int asteroidId = 0;
-	const float MAX_ASTEROID_VELOCITY = 60.f;
-	const float MAX_ASTEROID_RADIUS = 4.f;
+	const float MAX_ASTEROID_VELOCITY = 75.f;
+	const float MAX_ASTEROID_RADIUS = 3.f;
 	int flareId = 0;
 
-	float timeSinceLastSpawnedPlanet = 0.f;
+	float timeSinceLastPlanetSpawnCheck = 0.f;
 	const float MIN_PLANET_SIZE = 10.f;
 	bool spawningPlanet = false;
 	olc::Pixel spawnColor = olc::Colour::BLACK;
 	Planet planetToSpawn = { 0.f, 0.f, 0, 0.f, 0.f, 0.f, olc::Colour::WHITE };
 
 	Background background = Background();
-	MainSoundComponent soundEngine = MainSoundComponent();
 
 	olc::vf2d restartButtonPosition;
 	olc::vf2d restartButtonSize;
@@ -777,7 +790,7 @@ public:
 			stepPlanetFormation();
             draw.FilledCircle(planetToSpawn.position, planetToSpawn.radius, spawnColor);
 		} else {
-			timeSinceLastSpawnedPlanet += dt;
+			timeSinceLastPlanetSpawnCheck += dt;
 			shouldSpawnPlanet();
 		}
 
@@ -806,8 +819,10 @@ public:
 				}
 			} else {
 				draw.FilledCircle(asteroid->position, asteroid->radius, olc::Colour::WHITE);
+				olc::Pixel tailColor = olc::Colour::WHITE;
 				for (auto& point : asteroid->path) {
-					draw.FilledCircle(point, TAIL_WIDTH, olc::Colour::WHITE);
+					tailColor.a -= 2;
+					draw.FilledCircle(point, TAIL_WIDTH, tailColor);
 				}
 			}
         }
@@ -998,7 +1013,7 @@ public:
 			auto body = planets[idx].get();
 			if (body->id == id) {
 				planets.erase(std::next(planets.begin(), idx));
-				return;
+				break;
 			}
 		}
 		planetsToSpawn.push_back(id);
@@ -1077,16 +1092,16 @@ public:
 		a = randomFloat();	// radius scalar
 		asteroids.push_back(std::make_unique<Asteroid>(a * MAX_ASTEROID_RADIUS + 4.f, startPosition, asteroidId++, startVelocity));
 		if (asteroidId > 1000)
-			flareId = 0;
+			asteroidId = 0;
 	}
 
 	void shouldSpawnPlanet() {
 		if (
-			timeSinceLastSpawnedPlanet > 5.f &&
+			timeSinceLastPlanetSpawnCheck > 5.f &&
 			!planetsToSpawn.empty() &&
-			planetsToSpawn.size() < sun.maxNumPlanets
+			planets.size() < sun.maxNumPlanets
 		) {
-			timeSinceLastSpawnedPlanet = 0.f;
+			timeSinceLastPlanetSpawnCheck = 0.f;
 			spawnPlanet();
 		}
 	}
